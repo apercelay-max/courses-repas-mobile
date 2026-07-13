@@ -26,6 +26,8 @@ export interface Recipe {
   title: string;
   rawInput: string;
   createdAt: string;
+  /** Nombre de personnes pour lequel la recette est prévue (défaut : 4) */
+  servings?: number;
 }
 
 export interface RecipeIngredient {
@@ -42,6 +44,8 @@ export interface MealPlanEntry {
   plannedDate: string;
   mealSlot: "breakfast" | "lunch" | "dinner";
   cookedAt: string | null;
+  /** Nombre de personnes pour ce repas (défaut : servings de la recette) */
+  portions?: number;
 }
 
 export type ShoppingItemStatus = "to_buy" | "bought";
