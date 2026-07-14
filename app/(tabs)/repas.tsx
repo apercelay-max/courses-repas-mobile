@@ -10,7 +10,7 @@ import { useDatabase } from "@/context/DatabaseContext";
 import { useColors } from "@/hooks/useColors";
 import { useTheme } from "@/context/ThemeContext";
 import { GradientBackground } from "@/components/GradientBackground";
-import { mockExtractIngredients } from "@/lib/shoppingList";
+import { mockExtractIngredients, DEFAULT_SERVINGS } from "@/lib/shoppingList";
 import type { MealPlanEntry } from "@/types/database";
 
 const SLOTS: { key: MealPlanEntry["mealSlot"]; label: string; icon: string }[] = [
@@ -36,6 +36,12 @@ function getWeekDays(startDate: Date): Date[] {
   return days;
 }
 
+/** Formate le facteur portions/base sans décimale inutile (2, 1.5, 0.5...) */
+function formatFactor(factor: number): string {
+  const rounded = Math.round(factor * 100) / 100;
+  return Number.isInteger(rounded) ? String(rounded) : String(rounded).replace(".", ",");
+}
+
 export default function RepasScreen() {
   const colors = useColors();
   const { theme } = useTheme();
@@ -49,8 +55,10 @@ export default function RepasScreen() {
   const [showAddRecipe, setShowAddRecipe] = useState(false);
   const [selectedSlot, setSelectedSlot] = useState<MealPlanEntry["mealSlot"]>("dinner");
   const [selectedRecipeId, setSelectedRecipeId] = useState<string>("");
+  const [portionsValue, setPortionsValue] = useState<number>(DEFAULT_SERVINGS);
   const [newRecipeName, setNewRecipeName] = useState("");
   const [newRecipeText, setNewRecipeText] = useState("");
+  const [newRecipeServings, setNewRecipeServings] = useState(DEFAULT_SERVINGS);
   const [isExtracting, setIsExtracting] = useState(false);
 
   const weekDays = useMemo(() => getWeekDays(weekStart), [weekStart]);
@@ -59,28 +67,47 @@ export default function RepasScreen() {
     [db.mealPlanEntries, selectedDate]
   );
 
+  const selectedRecipe = useMemo(
+    () => db.recipes.find(r => r.id === selectedRecipeId),
+    [db.recipes, selectedRecipeId]
+  );
+  const baseServings = selectedRecipe?.servings && selectedRecipe.servings > 0 ? selectedRecipe.servings : DEFAULT_SERVINGS;
+  const portionsFactor = portionsValue / baseServings;
+
   function prevWeek() { const d = new Date(weekStart); d.setDate(d.getDate() - 7); setWeekStart(d); }
   function nextWeek() { const d = new Date(weekStart); d.setDate(d.getDate() + 7); setWeekStart(d); }
 
+  function handleSelectRecipe(recipe: { id: string; servings?: number }) {
+    setSelectedRecipeId(recipe.id);
+    setPortionsValue(recipe.servings && recipe.servings > 0 ? recipe.servings : DEFAULT_SERVINGS);
+  }
+
+  function adjustPortions(delta: number) {
+    setPortionsValue(v => Math.max(1, v + delta));
+  }
+
   async function handleAddMeal() {
     if (!selectedRecipeId) return;
-    await addMealPlanEntry(selectedRecipeId, selectedDate, selectedSlot);
+    await addMealPlanEntry(selectedRecipeId, selectedDate, selectedSlot, portionsValue);
     if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setShowAddMeal(false);
     setSelectedRecipeId("");
+    setPortionsValue(DEFAULT_SERVINGS);
   }
 
   async function handleCreateRecipe() {
     if (!newRecipeName.trim()) return;
     setIsExtracting(true);
     const ingredients = mockExtractIngredients(newRecipeText || newRecipeName);
-    const recipeId = await addRecipeWithIngredients(newRecipeName.trim(), newRecipeText || newRecipeName, ingredients);
+    const recipeId = await addRecipeWithIngredients(newRecipeName.trim(), newRecipeText || newRecipeName, ingredients, newRecipeServings);
     setIsExtracting(false);
     if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setShowAddRecipe(false);
     setNewRecipeName("");
     setNewRecipeText("");
+    setNewRecipeServings(DEFAULT_SERVINGS);
     setSelectedRecipeId(recipeId);
+    setPortionsValue(newRecipeServings);
   }
 
   async function handleCookMeal(entry: MealPlanEntry) {
@@ -162,12 +189,24 @@ export default function RepasScreen() {
                   const recipe = db.recipes.find(r => r.id === entry.recipeId);
                   const ingCount = db.recipeIngredients.filter(ri => ri.recipeId === entry.recipeId).length;
                   const isCooked = !!entry.cookedAt;
+                  const recipeBase = recipe?.servings && recipe.servings > 0 ? recipe.servings : DEFAULT_SERVINGS;
+                  const effectivePortions = entry.portions && entry.portions > 0 ? entry.portions : recipeBase;
+                  const entryFactor = effectivePortions / recipeBase;
                   return (
                     <View key={entry.id} style={[styles.mealCard, { backgroundColor: colors.card, borderColor: colors.cardBorder, borderWidth: 1 }]}>
                       <View style={[styles.mealAccent, { backgroundColor: isCooked ? colors.success : colors.primary }]} />
                       <View style={styles.mealCardContent}>
-                        <Text style={[styles.mealCardTitle, { color: colors.text }]}>{recipe?.title ?? "Repas"}</Text>
-                        {ingCount > 0 && <Text style={[styles.mealCardSub, { color: colors.mutedForeground }]}>{ingCount} ingrédient{ingCount > 1 ? "s" : ""}</Text>}
+                        <View style={styles.mealTitleRow}>
+                          <Text style={[styles.mealCardTitle, { color: colors.text }]}>{recipe?.title ?? "Repas"}</Text>
+                          {entryFactor !== 1 && (
+                            <View style={[styles.factorBadge, { backgroundColor: colors.primary + "20" }]}>
+                              <Text style={[styles.factorBadgeText, { color: colors.primary }]}>×{formatFactor(entryFactor)}</Text>
+                            </View>
+                          )}
+                        </View>
+                        <Text style={[styles.mealCardSub, { color: colors.mutedForeground }]}>
+                          {ingCount > 0 ? `${ingCount} ingrédient${ingCount > 1 ? "s" : ""} · ` : ""}pour {effectivePortions} pers.
+                        </Text>
                         {isCooked ? (
                           <View style={styles.cookedBadge}>
                             <Feather name="check-circle" size={12} color={colors.success} />
@@ -236,21 +275,70 @@ export default function RepasScreen() {
                   </TouchableOpacity>
                 </View>
               ) : (
-                db.recipes.map(recipe => (
-                  <TouchableOpacity key={recipe.id}
-                    style={[styles.recipeRow, { backgroundColor: mc.card, borderColor: selectedRecipeId === recipe.id ? mc.primary : "transparent", borderWidth: 2 }]}
-                    onPress={() => setSelectedRecipeId(recipe.id)}>
-                    <View style={[styles.recipeCheck, { backgroundColor: selectedRecipeId === recipe.id ? mc.primary : mc.muted }]}>
-                      {selectedRecipeId === recipe.id && <Feather name="check" size={14} color="#fff" />}
+                db.recipes.map(recipe => {
+                  const recipeServings = recipe.servings && recipe.servings > 0 ? recipe.servings : DEFAULT_SERVINGS;
+                  return (
+                    <TouchableOpacity key={recipe.id}
+                      style={[styles.recipeRow, { backgroundColor: mc.card, borderColor: selectedRecipeId === recipe.id ? mc.primary : "transparent", borderWidth: 2 }]}
+                      onPress={() => handleSelectRecipe(recipe)}>
+                      <View style={[styles.recipeCheck, { backgroundColor: selectedRecipeId === recipe.id ? mc.primary : mc.muted }]}>
+                        {selectedRecipeId === recipe.id && <Feather name="check" size={14} color="#fff" />}
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={[styles.recipeName, { color: mc.text }]}>{recipe.title}</Text>
+                        <Text style={[styles.recipeSub, { color: mc.mutedForeground }]}>
+                          {db.recipeIngredients.filter(ri => ri.recipeId === recipe.id).length} ingrédients · pour {recipeServings} pers.
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })
+              )}
+
+              {selectedRecipeId && (
+                <View style={styles.portionsSection}>
+                  <Text style={[styles.fieldLabel, { color: mc.mutedForeground }]}>PORTIONS POUR CE REPAS</Text>
+                  <View style={[styles.portionsRow, { backgroundColor: mc.card, borderColor: mc.border }]}>
+                    <TouchableOpacity
+                      onPress={() => adjustPortions(-1)}
+                      style={[styles.stepperBtn, { backgroundColor: mc.muted }]}
+                    >
+                      <Feather name="minus" size={18} color={mc.text} />
+                    </TouchableOpacity>
+                    <View style={styles.portionsCenter}>
+                      <Text style={[styles.portionsValue, { color: mc.text }]}>{portionsValue} pers.</Text>
+                      {portionsFactor !== 1 && (
+                        <Text style={[styles.portionsFactorLabel, { color: mc.primary }]}>
+                          ×{formatFactor(portionsFactor)} (recette pour {baseServings})
+                        </Text>
+                      )}
                     </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={[styles.recipeName, { color: mc.text }]}>{recipe.title}</Text>
-                      <Text style={[styles.recipeSub, { color: mc.mutedForeground }]}>
-                        {db.recipeIngredients.filter(ri => ri.recipeId === recipe.id).length} ingrédients
-                      </Text>
-                    </View>
-                  </TouchableOpacity>
-                ))
+                    <TouchableOpacity
+                      onPress={() => adjustPortions(1)}
+                      style={[styles.stepperBtn, { backgroundColor: mc.muted }]}
+                    >
+                      <Feather name="plus" size={18} color={mc.text} />
+                    </TouchableOpacity>
+                  </View>
+                  <View style={styles.quickChipsRow}>
+                    {[1, 2, 3, 4, 6].map(mult => {
+                      const val = baseServings * mult;
+                      const active = portionsValue === val;
+                      return (
+                        <TouchableOpacity
+                          key={mult}
+                          onPress={() => setPortionsValue(val)}
+                          style={[styles.quickChip, { backgroundColor: active ? mc.primary : mc.muted }]}
+                        >
+                          <Text style={[styles.quickChipText, { color: active ? "#fff" : mc.mutedForeground }]}>×{mult}</Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                  <Text style={[styles.portionsHint, { color: mc.mutedForeground }]}>
+                    Les quantités de la liste de courses suivront automatiquement ce nombre de portions.
+                  </Text>
+                </View>
               )}
             </ScrollView>
           </View>
@@ -277,9 +365,25 @@ export default function RepasScreen() {
                 onChangeText={setNewRecipeName}
                 autoFocus
               />
+              <Text style={[styles.fieldLabel, { color: mc.mutedForeground }]}>NOMBRE DE PERSONNES (par défaut)</Text>
+              <View style={[styles.portionsRow, { backgroundColor: mc.card, borderColor: mc.border }]}>
+                <TouchableOpacity
+                  onPress={() => setNewRecipeServings(v => Math.max(1, v - 1))}
+                  style={[styles.stepperBtn, { backgroundColor: mc.muted }]}
+                >
+                  <Feather name="minus" size={18} color={mc.text} />
+                </TouchableOpacity>
+                <Text style={[styles.portionsValue, { color: mc.text, flex: 1, textAlign: "center" }]}>{newRecipeServings} pers.</Text>
+                <TouchableOpacity
+                  onPress={() => setNewRecipeServings(v => v + 1)}
+                  style={[styles.stepperBtn, { backgroundColor: mc.muted }]}
+                >
+                  <Feather name="plus" size={18} color={mc.text} />
+                </TouchableOpacity>
+              </View>
               <Text style={[styles.fieldLabel, { color: mc.mutedForeground }]}>DESCRIPTION / INGRÉDIENTS (optionnel)</Text>
               <Text style={[styles.fieldHint, { color: mc.mutedForeground }]}>
-                Décris la recette ou liste les ingrédients. Ex: "400g de pâtes, viande hachée, tomates..."
+                Décris la recette ou liste les ingrédients (pour ce nombre de personnes). Ex: "400g de pâtes, viande hachée, tomates..."
               </Text>
               <TextInput
                 style={[styles.textArea, { backgroundColor: mc.muted, color: mc.text, borderColor: mc.border }]}
@@ -317,7 +421,10 @@ const styles = StyleSheet.create({
   mealCard: { flexDirection: "row", alignItems: "center", borderRadius: 12, marginBottom: 8, overflow: "hidden" },
   mealAccent: { width: 4, alignSelf: "stretch" },
   mealCardContent: { flex: 1, padding: 14 },
+  mealTitleRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   mealCardTitle: { fontSize: 15, fontWeight: "600" },
+  factorBadge: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 8 },
+  factorBadgeText: { fontSize: 11, fontWeight: "700" },
   mealCardSub: { fontSize: 12, marginTop: 2 },
   cookBtn: { flexDirection: "row", alignItems: "center", gap: 6, alignSelf: "flex-start", paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, marginTop: 8 },
   cookBtnText: { fontSize: 12, fontWeight: "700" },
@@ -349,4 +456,14 @@ const styles = StyleSheet.create({
   recipeCheck: { width: 24, height: 24, borderRadius: 12, alignItems: "center", justifyContent: "center" },
   recipeName: { fontSize: 15, fontWeight: "600" },
   recipeSub: { fontSize: 12, marginTop: 2 },
+  portionsSection: { marginTop: 8, marginBottom: 8 },
+  portionsRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", padding: 10, borderRadius: 12, borderWidth: 1 },
+  stepperBtn: { width: 40, height: 40, borderRadius: 10, alignItems: "center", justifyContent: "center" },
+  portionsCenter: { flex: 1, alignItems: "center" },
+  portionsValue: { fontSize: 17, fontWeight: "700" },
+  portionsFactorLabel: { fontSize: 12, fontWeight: "600", marginTop: 2 },
+  quickChipsRow: { flexDirection: "row", gap: 8, marginTop: 10 },
+  quickChip: { flex: 1, paddingVertical: 8, borderRadius: 8, alignItems: "center" },
+  quickChipText: { fontSize: 13, fontWeight: "700" },
+  portionsHint: { fontSize: 12, marginTop: 10, lineHeight: 16 },
 });

@@ -1,6 +1,6 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
-  View, Text, ScrollView, StyleSheet, TouchableOpacity, Platform, Alert,
+  View, Text, ScrollView, StyleSheet, TouchableOpacity, Platform, Alert, TextInput, Linking,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -11,6 +11,7 @@ import { useColors } from "@/hooks/useColors";
 import { useTheme } from "@/context/ThemeContext";
 import { GradientBackground } from "@/components/GradientBackground";
 import { THEME_LIST, type ThemeId } from "@/constants/themes";
+import { CLAUDE_KEY_STORAGE } from "@/lib/claude";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 export default function ParametresScreen() {
@@ -19,6 +20,19 @@ export default function ParametresScreen() {
   const { db } = useDatabase();
   const { theme, themeId, setThemeId } = useTheme();
   const [clearing, setClearing] = useState(false);
+
+  const [apiKeyInput, setApiKeyInput] = useState("");
+  const [savedKey, setSavedKey] = useState<string | null>(null);
+  const [showKey, setShowKey] = useState(false);
+  const [keySaved, setKeySaved] = useState(false);
+
+  useEffect(() => {
+    AsyncStorage.getItem(CLAUDE_KEY_STORAGE).then(v => {
+      const key = v && v.trim() ? v.trim() : null;
+      setSavedKey(key);
+      setApiKeyInput(key ?? "");
+    });
+  }, []);
 
   const topPad = Platform.OS === "web" ? 67 : insets.top;
 
@@ -36,6 +50,23 @@ export default function ParametresScreen() {
     { label: "Favoris", value: favoriteCount, icon: "star" as const, color: colors.warning },
     { label: "Expirent bientôt", value: expiringCount, icon: "alert-triangle" as const, color: colors.destructive },
   ];
+
+  async function handleSaveApiKey() {
+    const trimmed = apiKeyInput.trim();
+    if (!trimmed) return;
+    await AsyncStorage.setItem(CLAUDE_KEY_STORAGE, trimmed);
+    setSavedKey(trimmed);
+    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    setKeySaved(true);
+    setTimeout(() => setKeySaved(false), 2000);
+  }
+
+  async function handleRemoveApiKey() {
+    await AsyncStorage.removeItem(CLAUDE_KEY_STORAGE);
+    setSavedKey(null);
+    setApiKeyInput("");
+    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+  }
 
   async function handleClearData() {
     const doIt = async () => {
@@ -130,6 +161,67 @@ export default function ParametresScreen() {
           </View>
         </View>
 
+        {/* Intelligence artificielle */}
+        <View style={styles.section}>
+          <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>INTELLIGENCE ARTIFICIELLE</Text>
+          <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.cardBorder, borderWidth: 1 }]}>
+            <Text style={[styles.cardTitle, { color: colors.text }]}>Clé API Claude</Text>
+            <Text style={[styles.cardSub, { color: colors.mutedForeground }]}>
+              Utilisée uniquement par le scan de ticket de caisse pour lire tes tickets et remplir ton inventaire automatiquement. Ta clé reste sur ton téléphone, elle n'est envoyée qu'à l'API Anthropic.
+            </Text>
+
+            <View style={styles.keyInputRow}>
+              <TextInput
+                style={[styles.keyInput, { backgroundColor: colors.muted, color: colors.text, borderColor: colors.border }]}
+                placeholder="sk-ant-..."
+                placeholderTextColor={colors.mutedForeground}
+                value={apiKeyInput}
+                onChangeText={setApiKeyInput}
+                secureTextEntry={!showKey}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              <TouchableOpacity onPress={() => setShowKey(v => !v)} style={styles.eyeBtn}>
+                <Feather name={showKey ? "eye-off" : "eye"} size={18} color={colors.mutedForeground} />
+              </TouchableOpacity>
+            </View>
+
+            {keySaved && (
+              <View style={styles.keyStatusRow}>
+                <Feather name="check-circle" size={13} color={colors.success} />
+                <Text style={[styles.keyStatusText, { color: colors.success }]}>Clé enregistrée</Text>
+              </View>
+            )}
+            {!keySaved && savedKey && (
+              <View style={styles.keyStatusRow}>
+                <Feather name="check" size={13} color={colors.mutedForeground} />
+                <Text style={[styles.keyStatusText, { color: colors.mutedForeground }]}>Une clé est déjà enregistrée</Text>
+              </View>
+            )}
+
+            <View style={styles.keyActionsRow}>
+              <TouchableOpacity
+                onPress={handleSaveApiKey}
+                disabled={!apiKeyInput.trim()}
+                style={[styles.keySaveBtn, { backgroundColor: apiKeyInput.trim() ? colors.primary : colors.muted, flex: 1 }]}
+              >
+                <Text style={[styles.keySaveBtnText, { color: apiKeyInput.trim() ? "#fff" : colors.mutedForeground }]}>
+                  Enregistrer la clé
+                </Text>
+              </TouchableOpacity>
+              {savedKey && (
+                <TouchableOpacity onPress={handleRemoveApiKey} style={[styles.keyRemoveBtn, { borderColor: colors.destructive }]}>
+                  <Feather name="trash-2" size={16} color={colors.destructive} />
+                </TouchableOpacity>
+              )}
+            </View>
+
+            <TouchableOpacity onPress={() => Linking.openURL("https://console.anthropic.com/settings/keys")}>
+              <Text style={[styles.keyLink, { color: colors.primary }]}>Obtenir une clé sur console.anthropic.com →</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
         {/* Stats */}
         <View style={styles.section}>
           <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>MES DONNÉES</Text>
@@ -216,6 +308,16 @@ const styles = StyleSheet.create({
   card: { borderRadius: 16, padding: 4, overflow: "hidden" },
   cardTitle: { fontSize: 16, fontWeight: "600", marginBottom: 4, paddingHorizontal: 12, paddingTop: 12 },
   cardSub: { fontSize: 13, lineHeight: 18, marginBottom: 12, paddingHorizontal: 12 },
+  keyInputRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, marginBottom: 4 },
+  keyInput: { flex: 1, padding: 12, borderRadius: 10, borderWidth: 1, fontSize: 14 },
+  eyeBtn: { padding: 8 },
+  keyStatusRow: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 12, marginTop: 6 },
+  keyStatusText: { fontSize: 12, fontWeight: "600" },
+  keyActionsRow: { flexDirection: "row", gap: 8, paddingHorizontal: 12, marginTop: 12 },
+  keySaveBtn: { paddingVertical: 12, borderRadius: 10, alignItems: "center" },
+  keySaveBtnText: { fontSize: 14, fontWeight: "700" },
+  keyRemoveBtn: { width: 44, borderRadius: 10, borderWidth: 1.5, alignItems: "center", justifyContent: "center" },
+  keyLink: { fontSize: 12, fontWeight: "600", paddingHorizontal: 12, paddingTop: 12, paddingBottom: 14 },
   statRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 12, paddingHorizontal: 12 },
   statIcon: { width: 32, height: 32, borderRadius: 8, alignItems: "center", justifyContent: "center" },
   statLabel: { flex: 1, fontSize: 15 },

@@ -11,6 +11,7 @@ import { useDatabase } from "@/context/DatabaseContext";
 import { useColors } from "@/hooks/useColors";
 import { useTheme } from "@/context/ThemeContext";
 import { GradientBackground } from "@/components/GradientBackground";
+import { ReceiptScanModal } from "@/components/ReceiptScanModal";
 import type { Location, InventoryItem } from "@/types/database";
 import { UNITS, normalizeUnit } from "@/lib/units";
 
@@ -48,6 +49,7 @@ export default function InventaireScreen() {
   const [search, setSearch] = useState("");
   const [showModal, setShowModal] = useState(false);
   const [favOnly, setFavOnly] = useState(false);
+  const [showReceiptScan, setShowReceiptScan] = useState(false);
 
   const [form, setForm] = useState({ name: "", quantity: "1", unit: "piece", location: "frigo" as Location, expiryDate: "" });
 
@@ -210,6 +212,13 @@ export default function InventaireScreen() {
               <Feather name="star" size={18} color={favOnly ? colors.warning : colors.mutedForeground} />
             </TouchableOpacity>
           </View>
+          <TouchableOpacity
+            onPress={() => setShowReceiptScan(true)}
+            style={[styles.receiptBtn, { backgroundColor: colors.primary + "15", borderColor: colors.primary }]}
+          >
+            <Feather name="file-text" size={16} color={colors.primary} />
+            <Text style={[styles.receiptBtnText, { color: colors.primary }]}>Scanner un ticket de caisse</Text>
+          </TouchableOpacity>
         </View>
 
         <FlatList
@@ -378,6 +387,8 @@ export default function InventaireScreen() {
             </TouchableOpacity>
           </View>
         </Modal>
+
+        <ReceiptScanModal visible={showReceiptScan} onClose={() => setShowReceiptScan(false)} />
       </View>
     </GradientBackground>
   );
@@ -395,6 +406,8 @@ const styles = StyleSheet.create({
   searchRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10, borderWidth: 1 },
   searchInput: { flex: 1, fontSize: 15 },
   favFilter: { width: 44, height: 44, borderRadius: 10, borderWidth: 1, alignItems: "center", justifyContent: "center" },
+  receiptBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 10, paddingVertical: 10, borderRadius: 10, borderWidth: 1 },
+  receiptBtnText: { fontSize: 13, fontWeight: "700" },
   empty: { alignItems: "center", justifyContent: "center", paddingTop: 80, gap: 12 },
   emptyText: { fontSize: 16, fontWeight: "600", textAlign: "center" },
   emptySub: { fontSize: 13, textAlign: "center", paddingHorizontal: 20 },
