@@ -1,8 +1,8 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import type { Database, InventoryItem, MealPlanEntry, ShoppingLists, ExtractedIngredient } from "@/types/database";
+import type { Database, InventoryItem, Location, MealPlanEntry, ShoppingLists, ExtractedIngredient } from "@/types/database";
 import { initialData } from "@/lib/seedData";
-import { computeShoppingLists, findOrCreateIngredient, getIngredientName } from "@/lib/shoppingList";
+import { computeShoppingLists, findOrCreateIngredient, getIngredientName, getPortionFactor, DEFAULT_SERVINGS } from "@/lib/shoppingList";
 import { toComparable, fromComparable } from "@/lib/units";
 
 const STORAGE_KEY = "@repas-courses:db";
@@ -11,16 +11,25 @@ function genId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).substr(2, 6)}`;
 }
 
+export interface BatchInventoryInput {
+  name: string;
+  quantity: number;
+  unit: string;
+  location: Location;
+  expiryDate?: string | null;
+}
+
 interface DatabaseContextType {
   db: Database;
   isLoading: boolean;
   shoppingLists: ShoppingLists;
   addInventoryItem: (item: Omit<InventoryItem, "id" | "updatedAt">) => Promise<void>;
+  addInventoryItemsBatch: (items: BatchInventoryInput[]) => Promise<void>;
   updateInventoryItem: (id: string, updates: Partial<InventoryItem>) => Promise<void>;
   removeInventoryItem: (id: string) => Promise<void>;
   toggleFavorite: (id: string) => Promise<void>;
-  addRecipeWithIngredients: (title: string, rawInput: string, ingredients: ExtractedIngredient[]) => Promise<string>;
-  addMealPlanEntry: (recipeId: string, date: string, slot: MealPlanEntry["mealSlot"]) => Promise<void>;
+  addRecipeWithIngredients: (title: string, rawInput: string, ingredients: ExtractedIngredient[], servings?: number) => Promise<string>;
+  addMealPlanEntry: (recipeId: string, date: string, slot: MealPlanEntry["mealSlot"], portions?: number) => Promise<void>;
   removeMealPlanEntry: (id: string) => Promise<void>;
   cookMealPlanEntry: (id: string) => Promise<void>;
   addManualShoppingItem: (ingredientName: string, quantity: number, unit: string) => Promise<void>;
@@ -61,6 +70,26 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
     await save(newDb);
   }, [db, save]);
 
+  // Ajout groupé (scan de ticket de caisse) : crée/rapproche les ingrédients
+  // via findOrCreateIngredient puis ajoute tout l'inventaire en une seule sauvegarde.
+  const addInventoryItemsBatch = useCallback(async (items: BatchInventoryInput[]) => {
+    const newDb = { ...db, ingredients: [...db.ingredients], inventoryItems: [...db.inventoryItems] };
+    for (const it of items) {
+      const ingredient = findOrCreateIngredient(newDb, it.name, it.unit);
+      newDb.inventoryItems.push({
+        id: genId("inv"),
+        ingredientId: ingredient.id,
+        location: it.location,
+        quantity: it.quantity,
+        unit: it.unit,
+        expiryDate: it.expiryDate ?? null,
+        isFavorite: false,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+    await save(newDb);
+  }, [db, save]);
+
   const updateInventoryItem = useCallback(async (id: string, updates: Partial<InventoryItem>) => {
     const newDb = { ...db };
     newDb.inventoryItems = db.inventoryItems.map(item =>
@@ -82,10 +111,16 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
     await save(newDb);
   }, [db, save]);
 
-  const addRecipeWithIngredients = useCallback(async (title: string, rawInput: string, ingredients: ExtractedIngredient[]): Promise<string> => {
+  const addRecipeWithIngredients = useCallback(async (title: string, rawInput: string, ingredients: ExtractedIngredient[], servings?: number): Promise<string> => {
     const newDb = { ...db, ingredients: [...db.ingredients], recipes: [...db.recipes], recipeIngredients: [...db.recipeIngredients] };
     const recipeId = genId("rec");
-    newDb.recipes.push({ id: recipeId, title, rawInput, createdAt: new Date().toISOString() });
+    newDb.recipes.push({
+      id: recipeId,
+      title,
+      rawInput,
+      createdAt: new Date().toISOString(),
+      servings: servings && servings > 0 ? servings : DEFAULT_SERVINGS,
+    });
     for (const ing of ingredients) {
       const ingredient = findOrCreateIngredient(newDb, ing.name, ing.unit);
       newDb.recipeIngredients.push({
@@ -100,9 +135,16 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
     return recipeId;
   }, [db, save]);
 
-  const addMealPlanEntry = useCallback(async (recipeId: string, date: string, slot: MealPlanEntry["mealSlot"]) => {
+  const addMealPlanEntry = useCallback(async (recipeId: string, date: string, slot: MealPlanEntry["mealSlot"], portions?: number) => {
     const newDb = { ...db, mealPlanEntries: [...db.mealPlanEntries] };
-    newDb.mealPlanEntries.push({ id: genId("meal"), recipeId, plannedDate: date, mealSlot: slot, cookedAt: null });
+    newDb.mealPlanEntries.push({
+      id: genId("meal"),
+      recipeId,
+      plannedDate: date,
+      mealSlot: slot,
+      cookedAt: null,
+      portions: portions && portions > 0 ? portions : undefined,
+    });
     await save(newDb);
   }, [db, save]);
 
@@ -112,17 +154,19 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
   }, [db, save]);
 
   // "J'ai cuisiné ce repas" : déduit les ingrédients de la recette du stock (frigo/placard/congélateur confondus),
-  // en consommant en priorité ce qui expire le plus tôt, puis marque le repas comme cuisiné.
+  // en tenant compte du nombre de portions, en consommant en priorité ce qui expire le plus tôt,
+  // puis marque le repas comme cuisiné.
   const cookMealPlanEntry = useCallback(async (id: string) => {
     const entry = db.mealPlanEntries.find(e => e.id === id);
     if (!entry || entry.cookedAt) return;
 
+    const factor = getPortionFactor(db, entry);
     const recipeIngs = db.recipeIngredients.filter(ri => ri.recipeId === entry.recipeId);
     let inventoryItems = [...db.inventoryItems];
 
     for (const ri of recipeIngs) {
-      const { key, value: neededTotal } = toComparable(ri.quantity, ri.unit);
-      let remainingNeeded = neededTotal;
+      const { key, value: neededBase } = toComparable(ri.quantity, ri.unit);
+      let remainingNeeded = neededBase * factor;
 
       const candidateIds = inventoryItems
         .filter(item => item.ingredientId === ri.ingredientId && toComparable(item.quantity, item.unit).key === key)
@@ -206,7 +250,7 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
   return (
     <DatabaseContext.Provider value={{
       db, isLoading, shoppingLists,
-      addInventoryItem, updateInventoryItem, removeInventoryItem, toggleFavorite,
+      addInventoryItem, addInventoryItemsBatch, updateInventoryItem, removeInventoryItem, toggleFavorite,
       addRecipeWithIngredients, addMealPlanEntry, removeMealPlanEntry, cookMealPlanEntry,
       addManualShoppingItem, markItemBought, removeShoppingItem,
     }}>

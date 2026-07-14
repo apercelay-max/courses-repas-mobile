@@ -24,6 +24,8 @@ interface ThemeContextType {
   setWidgetLayout: (l: WidgetLayout) => void;
   tabStyle: TabStyle;
   setTabStyle: (t: TabStyle) => void;
+  showFavoriteDishes: boolean;
+  setShowFavoriteDishes: (v: boolean) => void;
 }
 
 export const ThemeContext = createContext<ThemeContextType | null>(null);
@@ -32,6 +34,7 @@ const THEME_KEY  = "@repas-courses:theme";
 const SHAPE_KEY  = "@repas-courses:widgetShape";
 const LAYOUT_KEY = "@repas-courses:widgetLayout";
 const TAB_KEY    = "@repas-courses:tabStyle";
+const FAV_DISHES_KEY = "@repas-courses:showFavDishes";
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const systemScheme = useColorScheme() ?? "light";
@@ -39,6 +42,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [widgetShape,  setWidgetShapeState]  = useState<WidgetShape>("arrondi");
   const [widgetLayout, setWidgetLayoutState] = useState<WidgetLayout>("grille");
   const [tabStyle,     setTabStyleState]     = useState<TabStyle>("classique");
+  const [showFavoriteDishes, setShowFavoriteDishesState] = useState(true);
 
   useEffect(() => {
     Promise.all([
@@ -46,11 +50,13 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       AsyncStorage.getItem(SHAPE_KEY),
       AsyncStorage.getItem(LAYOUT_KEY),
       AsyncStorage.getItem(TAB_KEY),
-    ]).then(([tv, sv, lv, tbv]) => {
+      AsyncStorage.getItem(FAV_DISHES_KEY),
+    ]).then(([tv, sv, lv, tbv, fv]) => {
       if (tv && (tv in THEMES || tv === "system")) setThemeIdState(tv as ThemeId | "system");
       if (sv && sv in WIDGET_SHAPES)  setWidgetShapeState(sv as WidgetShape);
       if (lv === "grille" || lv === "liste") setWidgetLayoutState(lv);
       if (tbv === "classique" || tbv === "verre") setTabStyleState(tbv);
+      if (fv === "0") setShowFavoriteDishesState(false);
     });
   }, []);
 
@@ -81,12 +87,18 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     AsyncStorage.setItem(TAB_KEY, t);
   }, []);
 
+  const setShowFavoriteDishes = useCallback((v: boolean) => {
+    setShowFavoriteDishesState(v);
+    AsyncStorage.setItem(FAV_DISHES_KEY, v ? "1" : "0");
+  }, []);
+
   return (
     <ThemeContext.Provider value={{
       theme, themeId, setThemeId,
       widgetShape, setWidgetShape,
       widgetLayout, setWidgetLayout,
       tabStyle, setTabStyle,
+      showFavoriteDishes, setShowFavoriteDishes,
     }}>
       {children}
     </ThemeContext.Provider>
