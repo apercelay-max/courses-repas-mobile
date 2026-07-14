@@ -1,7 +1,22 @@
-import type { Database, Ingredient, ShoppingListEntry, ReverseListEntry, ShoppingLists, ExtractedIngredient } from "@/types/database";
+import type { Database, Ingredient, MealPlanEntry, ShoppingListEntry, ReverseListEntry, ShoppingLists, ExtractedIngredient } from "@/types/database";
 import { toComparable, fromComparable, normalizeUnit } from "./units";
 
-function normalizeIngredientName(name: string): string {
+/** Nombre de personnes par défaut quand une recette n'en précise pas */
+export const DEFAULT_SERVINGS = 4;
+
+/**
+ * Facteur multiplicateur d'un repas planifié :
+ * portions demandées / portions de base de la recette.
+ * Ex : recette pour 4, repas pour 6 → facteur 1.5
+ */
+export function getPortionFactor(db: Database, entry: MealPlanEntry): number {
+  const recipe = db.recipes.find(r => r.id === entry.recipeId);
+  const base = recipe?.servings && recipe.servings > 0 ? recipe.servings : DEFAULT_SERVINGS;
+  const portions = entry.portions && entry.portions > 0 ? entry.portions : base;
+  return portions / base;
+}
+
+export function normalizeIngredientName(name: string): string {
   let s = name.toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
@@ -39,9 +54,10 @@ export function computeShoppingLists(db: Database, fromDate: string): ShoppingLi
   const needed = new Map<string, number>();
   const upcomingEntries = db.mealPlanEntries.filter(e => e.plannedDate >= fromDate);
   for (const entry of upcomingEntries) {
+    const factor = getPortionFactor(db, entry);
     const recipeIngs = db.recipeIngredients.filter(ri => ri.recipeId === entry.recipeId);
     for (const ri of recipeIngs) {
-      const { key, value } = toComparable(ri.quantity, ri.unit);
+      const { key, value } = toComparable(ri.quantity * factor, ri.unit);
       const mapKey = `${ri.ingredientId}__${key}`;
       needed.set(mapKey, (needed.get(mapKey) ?? 0) + value);
     }
