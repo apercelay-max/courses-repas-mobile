@@ -25,6 +25,7 @@ export function HomeCustomizeSheet({ visible, onClose }: Props) {
     widgetShape, setWidgetShape,
     widgetLayout, setWidgetLayout,
     tabStyle, setTabStyle,
+    showFavoriteDishes, setShowFavoriteDishes,
   } = useTheme();
   const isSystem = themeId === "system";
   const cardRadius = WIDGET_SHAPES[widgetShape].radius;
@@ -187,6 +188,24 @@ export function HomeCustomizeSheet({ visible, onClose }: Props) {
                 </TouchableOpacity>
               );
             })}
+          </View>
+
+          {/* ── WIDGETS DE L'ACCUEIL ── */}
+          <Text style={[styles.sectionLabel, { color: colors.mutedForeground, marginTop: 28 }]}>WIDGETS DE L'ACCUEIL</Text>
+          <View style={[styles.row, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <View style={[styles.rowIcon, { backgroundColor: colors.muted }]}>
+              <Feather name="award" size={16} color={colors.mutedForeground} />
+            </View>
+            <View style={styles.rowText}>
+              <Text style={[styles.rowTitle, { color: colors.text }]}>Tes plats préférés</Text>
+              <Text style={[styles.rowSub, { color: colors.mutedForeground }]}>Top 3 des plats les plus cuisinés, à re-planifier en un tap</Text>
+            </View>
+            <Switch
+              value={showFavoriteDishes}
+              onValueChange={setShowFavoriteDishes}
+              trackColor={{ false: colors.muted, true: colors.primary }}
+              thumbColor="#fff"
+            />
           </View>
 
           {/* ── APERÇU WIDGETS ── */}
