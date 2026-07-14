@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import {
-  View, Text, ScrollView, StyleSheet, TouchableOpacity, Platform, Alert, TextInput, Linking,
+  View, Text, ScrollView, StyleSheet, TouchableOpacity, Platform, Alert,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -11,7 +11,6 @@ import { useColors } from "@/hooks/useColors";
 import { useTheme } from "@/context/ThemeContext";
 import { GradientBackground } from "@/components/GradientBackground";
 import { THEME_LIST, type ThemeId } from "@/constants/themes";
-import { CLAUDE_KEY_STORAGE } from "@/lib/claude";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 export default function ParametresScreen() {
@@ -20,19 +19,6 @@ export default function ParametresScreen() {
   const { db } = useDatabase();
   const { theme, themeId, setThemeId } = useTheme();
   const [clearing, setClearing] = useState(false);
-
-  const [apiKeyInput, setApiKeyInput] = useState("");
-  const [savedKey, setSavedKey] = useState<string | null>(null);
-  const [showKey, setShowKey] = useState(false);
-  const [keySaved, setKeySaved] = useState(false);
-
-  useEffect(() => {
-    AsyncStorage.getItem(CLAUDE_KEY_STORAGE).then(v => {
-      const key = v && v.trim() ? v.trim() : null;
-      setSavedKey(key);
-      setApiKeyInput(key ?? "");
-    });
-  }, []);
 
   const topPad = Platform.OS === "web" ? 67 : insets.top;
 
@@ -43,30 +29,36 @@ export default function ParametresScreen() {
     return days >= 0 && days <= 3;
   }).length;
 
-  const stats = [
-    { label: "Articles en inventaire", value: db.inventoryItems.length, icon: "package" as const, color: colors.primary },
-    { label: "Recettes enregistrées", value: db.recipes.length, icon: "book-open" as const, color: colors.warning },
-    { label: "Repas planifiés", value: db.mealPlanEntries.length, icon: "calendar" as const, color: "#8B5CF6" },
-    { label: "Favoris", value: favoriteCount, icon: "star" as const, color: colors.warning },
-    { label: "Expirent bientôt", value: expiringCount, icon: "alert-triangle" as const, color: colors.destructive },
+  const frigoCount = db.inventoryItems.filter(i => i.location === "frigo").length;
+  const placardCount = db.inventoryItems.filter(i => i.location === "placard").length;
+  const congelCount = db.inventoryItems.filter(i => i.location === "congelateur").length;
+  const totalInv = db.inventoryItems.length;
+
+  const metrics = [
+    { label: "ARTICLES", value: totalInv, color: colors.primary },
+    { label: "RECETTES", value: db.recipes.length, color: colors.warning },
+    { label: "REPAS", value: db.mealPlanEntries.length, color: "#8B5CF6" },
   ];
 
-  async function handleSaveApiKey() {
-    const trimmed = apiKeyInput.trim();
-    if (!trimmed) return;
-    await AsyncStorage.setItem(CLAUDE_KEY_STORAGE, trimmed);
-    setSavedKey(trimmed);
-    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    setKeySaved(true);
-    setTimeout(() => setKeySaved(false), 2000);
-  }
+  // Cartes façon "workout card" PPL : rail coloré à gauche + contenu + chevron
+  const dataRows = [
+    {
+      rail: "FAV", railColor: colors.warning, value: favoriteCount,
+      title: "Favoris", sub: "Tes articles marqués d'une étoile",
+      chip: favoriteCount > 0 ? `${favoriteCount} article${favoriteCount > 1 ? "s" : ""}` : "aucun",
+    },
+    {
+      rail: "EXP", railColor: colors.destructive, value: expiringCount,
+      title: "Expirent bientôt", sub: "Dans les 3 prochains jours",
+      chip: expiringCount > 0 ? "à surveiller" : "rien à signaler",
+    },
+  ];
 
-  async function handleRemoveApiKey() {
-    await AsyncStorage.removeItem(CLAUDE_KEY_STORAGE);
-    setSavedKey(null);
-    setApiKeyInput("");
-    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-  }
+  const storageSegments = [
+    { label: "Frigo", count: frigoCount, color: "#38BDF8" },
+    { label: "Placard", count: placardCount, color: colors.warning },
+    { label: "Congél.", count: congelCount, color: "#8B5CF6" },
+  ];
 
   async function handleClearData() {
     const doIt = async () => {
@@ -105,25 +97,113 @@ export default function ParametresScreen() {
         contentContainerStyle={{ paddingTop: topPad + 16, paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 100 }}
         showsVerticalScrollIndicator={false}
       >
-        <View style={styles.header}>
-          <Text style={[styles.title, { color: colors.text }]}>Réglages</Text>
+        {/* ── Header façon PPL : badge dégradé + titre + tagline ── */}
+        <View style={[styles.header, { borderBottomColor: colors.border }]}>
+          <LinearGradient
+            colors={[colors.primary, "#8B5CF6"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.logoBadge}
+          >
+            <Text style={{ fontSize: 22, lineHeight: 26 }}>🍽️</Text>
+          </LinearGradient>
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.title, { color: colors.text }]}>Réglages</Text>
+            <Text style={[styles.tagline, { color: colors.mutedForeground }]}>Repas & Courses · v1.0 · Local</Text>
+          </View>
         </View>
 
-        {/* Thème visuel */}
+        {/* ── Carte inventaire façon "CYCLE EN COURS" PPL ── */}
+        <View style={styles.section}>
+          <View style={[styles.bigCard, { backgroundColor: colors.card, borderColor: colors.cardBorder }]}>
+            <View style={styles.bigCardHeader}>
+              <View>
+                <Text style={[styles.sectionLabel, { color: colors.mutedForeground, marginBottom: 0, paddingHorizontal: 0 }]}>MES DONNÉES</Text>
+                <Text style={[styles.bigCardSubtitle, { color: colors.text }]}>Vue d'ensemble</Text>
+              </View>
+              <View style={[styles.countPill, { backgroundColor: colors.muted, borderColor: colors.border }]}>
+                <Text style={[styles.countPillLabel, { color: colors.mutedForeground }]}>TOTAL</Text>
+                <Text style={[styles.countPillValue, { color: colors.text }]}>{totalInv}</Text>
+              </View>
+            </View>
+
+            {/* Boîtes métriques façon RIR / REPOS / OBJECTIF */}
+            <View style={styles.metricRow}>
+              {metrics.map(m => (
+                <View key={m.label} style={[styles.metricBox, { backgroundColor: colors.muted, borderColor: colors.border }]}>
+                  <Text style={[styles.metricLabel, { color: colors.mutedForeground }]}>{m.label}</Text>
+                  <Text style={[styles.metricValue, { color: m.color }]}>{m.value}</Text>
+                </View>
+              ))}
+            </View>
+
+            {/* Barre segmentée façon progression 8 semaines */}
+            <View style={styles.segmentRow}>
+              {storageSegments.map(seg => (
+                <View
+                  key={seg.label}
+                  style={{
+                    flex: Math.max(seg.count, totalInv === 0 ? 1 : 0.25),
+                    height: 6, borderRadius: 3,
+                    backgroundColor: seg.count > 0 ? seg.color : colors.muted,
+                  }}
+                />
+              ))}
+            </View>
+            <View style={styles.legendRow}>
+              {storageSegments.map(seg => (
+                <View key={seg.label} style={styles.legendItem}>
+                  <View style={[styles.legendDot, { backgroundColor: seg.color }]} />
+                  <Text style={[styles.legendText, { color: colors.mutedForeground }]}>
+                    {seg.label} · {seg.count}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          </View>
+        </View>
+
+        {/* ── Rows façon "workout cards" PPL : rail coloré + contenu + chevron ── */}
+        <View style={styles.section}>
+          {dataRows.map(row => (
+            <View
+              key={row.rail}
+              style={[styles.railCard, { backgroundColor: colors.card, borderColor: colors.cardBorder }]}
+            >
+              <View style={[styles.rail, { backgroundColor: row.railColor + "15", borderRightColor: row.railColor + "22" }]}>
+                <Text style={[styles.railLabel, { color: row.railColor }]}>{row.rail}</Text>
+                <Text style={[styles.railValue, { color: row.railColor + "99" }]}>{row.value}</Text>
+              </View>
+              <View style={styles.railContent}>
+                <Text style={[styles.railTitle, { color: colors.text }]}>{row.title}</Text>
+                <Text style={[styles.railSub, { color: colors.mutedForeground }]}>{row.sub}</Text>
+                <View style={{ flexDirection: "row", marginTop: 6 }}>
+                  <View style={[styles.chip, { backgroundColor: row.railColor + "15", borderColor: row.railColor + "25" }]}>
+                    <Text style={[styles.chipText, { color: row.railColor }]}>{row.chip}</Text>
+                  </View>
+                </View>
+              </View>
+              <Text style={[styles.chevron, { color: row.railColor }]}>›</Text>
+            </View>
+          ))}
+        </View>
+
+        {/* ── Thème ── */}
         <View style={styles.section}>
           <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>THÈME</Text>
 
-          {/* Automatique toggle */}
+          {/* Automatique : carte à rail façon PPL */}
           <TouchableOpacity
             onPress={() => setThemeId(isSystemSelected ? "classicLight" : "system")}
-            style={[styles.systemRow, { backgroundColor: colors.card, borderColor: colors.cardBorder, borderWidth: 1 }]}
+            style={[styles.railCard, { backgroundColor: colors.card, borderColor: colors.cardBorder, marginBottom: 14 }]}
+            activeOpacity={0.8}
           >
-            <View style={[styles.systemIcon, { backgroundColor: colors.muted }]}>
-              <Feather name="smartphone" size={18} color={colors.text} />
+            <View style={[styles.rail, { backgroundColor: colors.primary + "15", borderRightColor: colors.primary + "22" }]}>
+              <Feather name="smartphone" size={18} color={colors.primary} />
             </View>
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.systemLabel, { color: colors.text }]}>Automatique (système)</Text>
-              <Text style={[styles.systemSub, { color: colors.mutedForeground }]}>Suit le mode clair/sombre du téléphone</Text>
+            <View style={styles.railContent}>
+              <Text style={[styles.railTitle, { color: colors.text }]}>Automatique</Text>
+              <Text style={[styles.railSub, { color: colors.mutedForeground }]}>Suit le mode clair/sombre du téléphone</Text>
             </View>
             <View style={[styles.toggle, { backgroundColor: isSystemSelected ? colors.primary : colors.muted }]}>
               <View style={[styles.toggleKnob, { transform: [{ translateX: isSystemSelected ? 20 : 2 }] }]} />
@@ -161,124 +241,53 @@ export default function ParametresScreen() {
           </View>
         </View>
 
-        {/* Intelligence artificielle */}
-        <View style={styles.section}>
-          <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>INTELLIGENCE ARTIFICIELLE</Text>
-          <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.cardBorder, borderWidth: 1 }]}>
-            <Text style={[styles.cardTitle, { color: colors.text }]}>Clé API Claude</Text>
-            <Text style={[styles.cardSub, { color: colors.mutedForeground }]}>
-              Utilisée uniquement par le scan de ticket de caisse pour lire tes tickets et remplir ton inventaire automatiquement. Ta clé reste sur ton téléphone, elle n'est envoyée qu'à l'API Anthropic.
-            </Text>
-
-            <View style={styles.keyInputRow}>
-              <TextInput
-                style={[styles.keyInput, { backgroundColor: colors.muted, color: colors.text, borderColor: colors.border }]}
-                placeholder="sk-ant-..."
-                placeholderTextColor={colors.mutedForeground}
-                value={apiKeyInput}
-                onChangeText={setApiKeyInput}
-                secureTextEntry={!showKey}
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-              <TouchableOpacity onPress={() => setShowKey(v => !v)} style={styles.eyeBtn}>
-                <Feather name={showKey ? "eye-off" : "eye"} size={18} color={colors.mutedForeground} />
-              </TouchableOpacity>
-            </View>
-
-            {keySaved && (
-              <View style={styles.keyStatusRow}>
-                <Feather name="check-circle" size={13} color={colors.success} />
-                <Text style={[styles.keyStatusText, { color: colors.success }]}>Clé enregistrée</Text>
-              </View>
-            )}
-            {!keySaved && savedKey && (
-              <View style={styles.keyStatusRow}>
-                <Feather name="check" size={13} color={colors.mutedForeground} />
-                <Text style={[styles.keyStatusText, { color: colors.mutedForeground }]}>Une clé est déjà enregistrée</Text>
-              </View>
-            )}
-
-            <View style={styles.keyActionsRow}>
-              <TouchableOpacity
-                onPress={handleSaveApiKey}
-                disabled={!apiKeyInput.trim()}
-                style={[styles.keySaveBtn, { backgroundColor: apiKeyInput.trim() ? colors.primary : colors.muted, flex: 1 }]}
-              >
-                <Text style={[styles.keySaveBtnText, { color: apiKeyInput.trim() ? "#fff" : colors.mutedForeground }]}>
-                  Enregistrer la clé
-                </Text>
-              </TouchableOpacity>
-              {savedKey && (
-                <TouchableOpacity onPress={handleRemoveApiKey} style={[styles.keyRemoveBtn, { borderColor: colors.destructive }]}>
-                  <Feather name="trash-2" size={16} color={colors.destructive} />
-                </TouchableOpacity>
-              )}
-            </View>
-
-            <TouchableOpacity onPress={() => Linking.openURL("https://console.anthropic.com/settings/keys")}>
-              <Text style={[styles.keyLink, { color: colors.primary }]}>Obtenir une clé sur console.anthropic.com →</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        {/* Stats */}
-        <View style={styles.section}>
-          <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>MES DONNÉES</Text>
-          <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.cardBorder, borderWidth: 1 }]}>
-            {stats.map((stat, i) => (
-              <View
-                key={stat.label}
-                style={[
-                  styles.statRow,
-                  i < stats.length - 1 && { borderBottomColor: colors.border, borderBottomWidth: StyleSheet.hairlineWidth },
-                ]}
-              >
-                <View style={[styles.statIcon, { backgroundColor: stat.color + "20" }]}>
-                  <Feather name={stat.icon} size={16} color={stat.color} />
-                </View>
-                <Text style={[styles.statLabel, { color: colors.text }]}>{stat.label}</Text>
-                <Text style={[styles.statValue, { color: colors.mutedForeground }]}>{stat.value}</Text>
-              </View>
-            ))}
-          </View>
-        </View>
-
-        {/* Infos */}
+        {/* ── Carte teintée façon "Nutrition post-training" ── */}
         <View style={styles.section}>
           <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>APPLICATION</Text>
-          <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.cardBorder, borderWidth: 1 }]}>
-            {[
-              { label: "Version", value: "1.0.0" },
-              { label: "Stockage", value: "Local (sur cet appareil)" },
-              { label: "Auteur", value: "Repas & Courses" },
-            ].map((row, i, arr) => (
-              <View key={row.label} style={[styles.infoRow, i < arr.length - 1 && { borderBottomColor: colors.border, borderBottomWidth: StyleSheet.hairlineWidth }]}>
-                <Text style={[styles.infoLabel, { color: colors.text }]}>{row.label}</Text>
-                <Text style={[styles.infoValue, { color: colors.mutedForeground }]}>{row.value}</Text>
-              </View>
-            ))}
+          <View style={[styles.tintCard, { backgroundColor: colors.warning + "12", borderColor: colors.warning + "30" }]}>
+            <Text style={[styles.tintCardTitle, { color: colors.warning }]}>💾 Stockage local</Text>
+            <Text style={[styles.tintCardBody, { color: colors.mutedForeground }]}>
+              Tes données restent <Text style={{ fontWeight: "700", color: colors.warning }}>sur cet appareil</Text> —
+              rien n'est envoyé sur internet. Version 1.0.0.
+            </Text>
+          </View>
+          <View style={[styles.tintCard, { backgroundColor: "#22C55E12", borderColor: "#22C55E30", marginTop: 8 }]}>
+            <Text style={[styles.tintCardTitle, { color: "#22C55E" }]}>⟳ Astuce voix</Text>
+            <Text style={[styles.tintCardBody, { color: colors.mutedForeground }]}>
+              Depuis l'accueil, dicte tes articles : « 500g de pâtes dans le placard et du lait au frigo ».
+            </Text>
           </View>
         </View>
 
-        {/* Danger */}
+        {/* ── Zone danger façon carte "SÉANCE EN COURS" ── */}
         <View style={styles.section}>
           <Text style={[styles.sectionLabel, { color: colors.destructive }]}>ZONE DANGER</Text>
-          <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.cardBorder, borderWidth: 1 }]}>
-            <Text style={[styles.cardTitle, { color: colors.text }]}>Effacer toutes les données</Text>
-            <Text style={[styles.cardSub, { color: colors.mutedForeground }]}>
-              Supprime définitivement ton inventaire, tes recettes, ton planning et tes réglages.
-            </Text>
-            <TouchableOpacity
-              style={[styles.dangerBtn, { backgroundColor: colors.destructive + "15", borderColor: colors.destructive }]}
-              onPress={handleClearData}
-              disabled={clearing}
+          <View style={[styles.dangerCard, { backgroundColor: colors.destructive + "10", borderColor: colors.destructive + "30" }]}>
+            <LinearGradient
+              colors={[colors.destructive, "#7F1D1D"]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.dangerIcon}
             >
-              <Feather name="trash-2" size={16} color={colors.destructive} />
-              <Text style={[styles.dangerBtnText, { color: colors.destructive }]}>
-                {clearing ? "Suppression..." : "Tout effacer"}
+              <Feather name="trash-2" size={17} color="#fff" />
+            </LinearGradient>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.dangerLabel, { color: colors.destructive }]}>ACTION IRRÉVERSIBLE</Text>
+              <Text style={[styles.dangerTitle, { color: colors.text }]}>Effacer toutes les données</Text>
+              <Text style={[styles.dangerSub, { color: colors.mutedForeground }]}>
+                Inventaire, recettes, planning et réglages.
               </Text>
-            </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.dangerBtn, { backgroundColor: colors.destructive + "15", borderColor: colors.destructive }]}
+                onPress={handleClearData}
+                disabled={clearing}
+              >
+                <Feather name="trash-2" size={15} color={colors.destructive} />
+                <Text style={[styles.dangerBtnText, { color: colors.destructive }]}>
+                  {clearing ? "Suppression..." : "Tout effacer"}
+                </Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </ScrollView>
@@ -288,15 +297,66 @@ export default function ParametresScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  header: { paddingHorizontal: 20, marginBottom: 20 },
-  title: { fontSize: 28, fontWeight: "700" },
-  section: { marginBottom: 24, paddingHorizontal: 16 },
-  sectionLabel: { fontSize: 11, fontWeight: "700", letterSpacing: 0.8, marginBottom: 10, paddingHorizontal: 4 },
-  systemRow: { flexDirection: "row", alignItems: "center", gap: 12, padding: 14, borderRadius: 14, marginBottom: 14 },
-  systemIcon: { width: 38, height: 38, borderRadius: 10, alignItems: "center", justifyContent: "center" },
-  systemLabel: { fontSize: 15, fontWeight: "600" },
-  systemSub: { fontSize: 12, marginTop: 2 },
-  toggle: { width: 44, height: 26, borderRadius: 13, justifyContent: "center" },
+  header: {
+    flexDirection: "row", alignItems: "center", gap: 14,
+    paddingHorizontal: 20, paddingBottom: 18, marginBottom: 18,
+    borderBottomWidth: 1,
+  },
+  logoBadge: {
+    width: 48, height: 48, borderRadius: 14,
+    alignItems: "center", justifyContent: "center",
+    shadowColor: "#000", shadowOpacity: 0.25, shadowRadius: 8, shadowOffset: { width: 0, height: 4 },
+    elevation: 4,
+  },
+  title: { fontSize: 26, fontWeight: "800", letterSpacing: -0.5 },
+  tagline: { fontSize: 12, marginTop: 2 },
+  section: { marginBottom: 22, paddingHorizontal: 16 },
+  sectionLabel: { fontSize: 10, fontWeight: "700", letterSpacing: 2, marginBottom: 10, paddingHorizontal: 4 },
+
+  // Grande carte type "CYCLE EN COURS"
+  bigCard: { borderRadius: 20, padding: 18, borderWidth: 1 },
+  bigCardHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 },
+  bigCardSubtitle: { fontSize: 15, fontWeight: "700", marginTop: 2 },
+  countPill: {
+    flexDirection: "column", alignItems: "center",
+    borderRadius: 12, paddingVertical: 4, paddingHorizontal: 12, borderWidth: 1,
+  },
+  countPillLabel: { fontSize: 9, fontWeight: "700", letterSpacing: 1 },
+  countPillValue: { fontSize: 18, fontWeight: "800", lineHeight: 20 },
+  metricRow: { flexDirection: "row", gap: 8, marginBottom: 14 },
+  metricBox: {
+    flex: 1, borderRadius: 10, borderWidth: 1,
+    paddingVertical: 8, paddingHorizontal: 6,
+    alignItems: "center", gap: 3,
+  },
+  metricLabel: { fontSize: 9, fontWeight: "700", letterSpacing: 1 },
+  metricValue: { fontSize: 16, fontWeight: "800", letterSpacing: -0.5 },
+  segmentRow: { flexDirection: "row", gap: 5, alignItems: "center", marginBottom: 8 },
+  legendRow: { flexDirection: "row", gap: 12 },
+  legendItem: { flexDirection: "row", alignItems: "center", gap: 5 },
+  legendDot: { width: 7, height: 7, borderRadius: 4 },
+  legendText: { fontSize: 10 },
+
+  // Cartes à rail façon "workout card"
+  railCard: {
+    flexDirection: "row", alignItems: "center",
+    borderRadius: 18, marginBottom: 8, borderWidth: 1, overflow: "hidden",
+  },
+  rail: {
+    width: 48, alignSelf: "stretch",
+    alignItems: "center", justifyContent: "center", gap: 3,
+    borderRightWidth: 1,
+  },
+  railLabel: { fontSize: 10, fontWeight: "800", letterSpacing: 1.5 },
+  railValue: { fontSize: 11, fontWeight: "700" },
+  railContent: { flex: 1, paddingVertical: 13, paddingHorizontal: 14 },
+  railTitle: { fontSize: 16, fontWeight: "800", letterSpacing: -0.3, marginBottom: 2 },
+  railSub: { fontSize: 12 },
+  chip: { borderRadius: 6, paddingVertical: 2, paddingHorizontal: 8, borderWidth: 1 },
+  chipText: { fontSize: 10, fontWeight: "700" },
+  chevron: { fontSize: 22, fontWeight: "200", paddingRight: 14, opacity: 0.6 },
+
+  toggle: { width: 44, height: 26, borderRadius: 13, justifyContent: "center", marginRight: 12 },
   toggleKnob: { width: 20, height: 20, borderRadius: 10, backgroundColor: "#fff" },
   themeGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
   themeCard: { width: "30%", alignItems: "center", gap: 6 },
@@ -305,26 +365,27 @@ const styles = StyleSheet.create({
   themeCheck: { width: 22, height: 22, borderRadius: 11, backgroundColor: "rgba(0,0,0,0.35)", alignItems: "center", justifyContent: "center" },
   themeEmoji: { position: "absolute", bottom: 8, left: 10, fontSize: 22 },
   themeName: { fontSize: 11, fontWeight: "600", textAlign: "center" },
-  card: { borderRadius: 16, padding: 4, overflow: "hidden" },
-  cardTitle: { fontSize: 16, fontWeight: "600", marginBottom: 4, paddingHorizontal: 12, paddingTop: 12 },
-  cardSub: { fontSize: 13, lineHeight: 18, marginBottom: 12, paddingHorizontal: 12 },
-  keyInputRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, marginBottom: 4 },
-  keyInput: { flex: 1, padding: 12, borderRadius: 10, borderWidth: 1, fontSize: 14 },
-  eyeBtn: { padding: 8 },
-  keyStatusRow: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 12, marginTop: 6 },
-  keyStatusText: { fontSize: 12, fontWeight: "600" },
-  keyActionsRow: { flexDirection: "row", gap: 8, paddingHorizontal: 12, marginTop: 12 },
-  keySaveBtn: { paddingVertical: 12, borderRadius: 10, alignItems: "center" },
-  keySaveBtnText: { fontSize: 14, fontWeight: "700" },
-  keyRemoveBtn: { width: 44, borderRadius: 10, borderWidth: 1.5, alignItems: "center", justifyContent: "center" },
-  keyLink: { fontSize: 12, fontWeight: "600", paddingHorizontal: 12, paddingTop: 12, paddingBottom: 14 },
-  statRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 12, paddingHorizontal: 12 },
-  statIcon: { width: 32, height: 32, borderRadius: 8, alignItems: "center", justifyContent: "center" },
-  statLabel: { flex: 1, fontSize: 15 },
-  statValue: { fontSize: 15, fontWeight: "600" },
-  infoRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 12, paddingHorizontal: 12 },
-  infoLabel: { fontSize: 15 },
-  infoValue: { fontSize: 14 },
-  dangerBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 12, borderRadius: 10, borderWidth: 1.5, marginHorizontal: 12, marginBottom: 12 },
-  dangerBtnText: { fontSize: 15, fontWeight: "600" },
+
+  tintCard: { borderRadius: 14, padding: 14, borderWidth: 1 },
+  tintCardTitle: { fontSize: 12, fontWeight: "700", marginBottom: 5 },
+  tintCardBody: { fontSize: 12, lineHeight: 17 },
+
+  dangerCard: {
+    flexDirection: "row", gap: 14, alignItems: "flex-start",
+    borderRadius: 18, padding: 16, borderWidth: 1,
+  },
+  dangerIcon: {
+    width: 40, height: 40, borderRadius: 12,
+    alignItems: "center", justifyContent: "center",
+    shadowColor: "#000", shadowOpacity: 0.3, shadowRadius: 6, shadowOffset: { width: 0, height: 3 },
+    elevation: 4,
+  },
+  dangerLabel: { fontSize: 9, fontWeight: "700", letterSpacing: 1.5, marginBottom: 3 },
+  dangerTitle: { fontSize: 16, fontWeight: "800", marginBottom: 2 },
+  dangerSub: { fontSize: 12, marginBottom: 10 },
+  dangerBtn: {
+    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
+    paddingVertical: 11, borderRadius: 10, borderWidth: 1.5,
+  },
+  dangerBtnText: { fontSize: 14, fontWeight: "700" },
 });
