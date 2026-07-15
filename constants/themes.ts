@@ -1,6 +1,7 @@
 export type ThemeId =
   | "classicLight"
   | "classicDark"
+  | "ppl"
   | "aube"
   | "soleil"
   | "ocean"
@@ -44,6 +45,8 @@ export type AppThemeColors = {
   cardShadow?: string;
   /** Optional glow color (neon themes) */
   numGlow?: string;
+  /** Deuxième couleur d'accent (dégradés) — surchargée par la couleur d'accent choisie */
+  accent2?: string;
 };
 
 export type AppTheme = {
@@ -98,6 +101,27 @@ export const THEMES: Record<ThemeId, AppTheme> = {
       destructive: "#F87171", destructiveForeground: "#FFFFFF",
       frigo: "#60A5FA", placard: "#A78BFA", congelateur: "#22D3EE",
       radius: RADIUS, numColor: "#818CF8",
+    },
+  },
+
+  ppl: {
+    id: "ppl",
+    name: "PPL",
+    emoji: "💪",
+    gradient: ["#0D0D0F", "#161216", "#0D0D0F"],
+    isDark: true,
+    colors: {
+      text: "#FFFFFF", mutedForeground: "#9A9AA5",
+      background: "#0D0D0F", card: "#161618", cardBorder: "#242428",
+      primary: "#E03030", primaryForeground: "#FFFFFF",
+      secondary: "#1C1C1F", secondaryForeground: "#E03030",
+      muted: "#18181B", border: "#1C1C1F", input: "#1C1C1F",
+      tint: "#E03030", success: "#4CAF50", successLight: "rgba(76,175,80,0.15)",
+      warning: "#E8A020", warningLight: "rgba(232,160,32,0.15)",
+      destructive: "#E05050", destructiveForeground: "#FFFFFF",
+      frigo: "#45A8F5", placard: "#9B27AF", congelateur: "#67E8F9",
+      radius: RADIUS, numColor: "#E03030",
+      accent2: "#9B27AF",
     },
   },
 
