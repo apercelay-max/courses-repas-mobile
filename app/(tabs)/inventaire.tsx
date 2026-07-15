@@ -11,7 +11,7 @@ import { useDatabase } from "@/context/DatabaseContext";
 import { useColors } from "@/hooks/useColors";
 import { useTheme } from "@/context/ThemeContext";
 import { GradientBackground } from "@/components/GradientBackground";
-import { ReceiptScanModal } from "@/components/ReceiptScanModal";
+import { WebBarcodeScanner } from "@/components/WebBarcodeScanner";
 import type { Location, InventoryItem } from "@/types/database";
 import { UNITS, normalizeUnit } from "@/lib/units";
 
@@ -49,7 +49,6 @@ export default function InventaireScreen() {
   const [search, setSearch] = useState("");
   const [showModal, setShowModal] = useState(false);
   const [favOnly, setFavOnly] = useState(false);
-  const [showReceiptScan, setShowReceiptScan] = useState(false);
 
   const [form, setForm] = useState({ name: "", quantity: "1", unit: "piece", location: "frigo" as Location, expiryDate: "" });
 
@@ -102,6 +101,14 @@ export default function InventaireScreen() {
 
   async function handleOpenScanner() {
     setScanError(null);
+    // Sur le web, expo-camera n'a pas de vraie API de permission caméra
+    // fiable : getUserMedia (déclenché par WebBarcodeScanner) affichera
+    // lui-même la demande d'autorisation du navigateur.
+    if (Platform.OS === "web") {
+      hasScannedRef.current = false;
+      setShowScanner(true);
+      return;
+    }
     if (permission && !permission.granted && !permission.canAskAgain) {
       Alert.alert(
         "Permission caméra requise",
@@ -117,13 +124,11 @@ export default function InventaireScreen() {
     setShowScanner(true);
   }
 
-  async function handleBarcodeScanned(result: BarcodeScanningResult) {
-    if (hasScannedRef.current) return;
-    hasScannedRef.current = true;
+  async function lookupBarcode(code: string) {
     if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setIsLookingUp(true);
     try {
-      const res = await fetch(`https://world.openfoodfacts.org/api/v2/product/${result.data}.json`);
+      const res = await fetch(`https://world.openfoodfacts.org/api/v2/product/${code}.json`);
       const json = await res.json();
       if (json.status === 1 && json.product) {
         const name: string = json.product.product_name_fr || json.product.product_name || "";
@@ -144,6 +149,18 @@ export default function InventaireScreen() {
       setIsLookingUp(false);
       setShowScanner(false);
     }
+  }
+
+  async function handleBarcodeScanned(result: BarcodeScanningResult) {
+    if (hasScannedRef.current) return;
+    hasScannedRef.current = true;
+    await lookupBarcode(result.data);
+  }
+
+  function handleWebBarcodeScanned(code: string) {
+    if (hasScannedRef.current) return;
+    hasScannedRef.current = true;
+    lookupBarcode(code);
   }
 
   async function handleDelete(id: string) {
@@ -212,13 +229,6 @@ export default function InventaireScreen() {
               <Feather name="star" size={18} color={favOnly ? colors.warning : colors.mutedForeground} />
             </TouchableOpacity>
           </View>
-          <TouchableOpacity
-            onPress={() => setShowReceiptScan(true)}
-            style={[styles.receiptBtn, { backgroundColor: colors.primary + "15", borderColor: colors.primary }]}
-          >
-            <Feather name="file-text" size={16} color={colors.primary} />
-            <Text style={[styles.receiptBtnText, { color: colors.primary }]}>Scanner un ticket de caisse</Text>
-          </TouchableOpacity>
         </View>
 
         <FlatList
@@ -367,12 +377,16 @@ export default function InventaireScreen() {
 
         <Modal visible={showScanner} animationType="slide" onRequestClose={() => setShowScanner(false)}>
           <View style={styles.scannerContainer}>
-            <CameraView
-              style={StyleSheet.absoluteFillObject}
-              facing="back"
-              barcodeScannerSettings={{ barcodeTypes: ["ean13", "ean8", "upc_a", "upc_e", "code128"] }}
-              onBarcodeScanned={isLookingUp ? undefined : handleBarcodeScanned}
-            />
+            {Platform.OS === "web" ? (
+              <WebBarcodeScanner active={showScanner} onScanned={handleWebBarcodeScanned} />
+            ) : (
+              <CameraView
+                style={StyleSheet.absoluteFillObject}
+                facing="back"
+                barcodeScannerSettings={{ barcodeTypes: ["ean13", "ean8", "upc_a", "upc_e", "code128"] }}
+                onBarcodeScanned={isLookingUp ? undefined : handleBarcodeScanned}
+              />
+            )}
             <View style={styles.scannerOverlay} pointerEvents="none">
               <View style={styles.scannerFrame} />
               <Text style={styles.scannerHint}>
@@ -387,8 +401,6 @@ export default function InventaireScreen() {
             </TouchableOpacity>
           </View>
         </Modal>
-
-        <ReceiptScanModal visible={showReceiptScan} onClose={() => setShowReceiptScan(false)} />
       </View>
     </GradientBackground>
   );
@@ -406,8 +418,6 @@ const styles = StyleSheet.create({
   searchRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10, borderWidth: 1 },
   searchInput: { flex: 1, fontSize: 15 },
   favFilter: { width: 44, height: 44, borderRadius: 10, borderWidth: 1, alignItems: "center", justifyContent: "center" },
-  receiptBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 10, paddingVertical: 10, borderRadius: 10, borderWidth: 1 },
-  receiptBtnText: { fontSize: 13, fontWeight: "700" },
   empty: { alignItems: "center", justifyContent: "center", paddingTop: 80, gap: 12 },
   emptyText: { fontSize: 16, fontWeight: "600", textAlign: "center" },
   emptySub: { fontSize: 13, textAlign: "center", paddingHorizontal: 20 },
