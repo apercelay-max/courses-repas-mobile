@@ -18,6 +18,34 @@ type VoiceState = "idle" | "listening" | "processing" | "result" | "error";
 const LOCATION_LABELS = { frigo: "Frigo 🧊", placard: "Placard 📦", congelateur: "Congélateur ❄️" } as const;
 type LocationKey = keyof typeof LOCATION_LABELS;
 
+// Safari n'implémente pas window.SpeechRecognition (contrairement à Chrome),
+// donc on n'utilise plus l'API de reconnaissance vocale du navigateur.
+// À la place : on enregistre l'audio avec MediaRecorder (supporté par tous
+// les navigateurs modernes, y compris Safari) et on l'envoie à /api/transcribe,
+// une petite fonction serveur qui relaie vers Whisper (OpenAI) pour le
+// transcrire en texte.
+function pickSupportedMimeType(): string {
+  if (typeof window === "undefined" || !(window as any).MediaRecorder) return "";
+  const candidates = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm", "audio/ogg"];
+  for (const type of candidates) {
+    if ((window as any).MediaRecorder.isTypeSupported?.(type)) return type;
+  }
+  return "";
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const result = reader.result as string;
+      const comma = result.indexOf(",");
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
 export function VoiceCommandModal({ visible, onClose }: Props) {
   const colors = useColors();
   const { db, addInventoryItem } = useDatabase();
@@ -30,11 +58,15 @@ export function VoiceCommandModal({ visible, onClose }: Props) {
   const [errorMsg, setErrorMsg] = useState("");
   const [added, setAdded] = useState(false);
 
-  const recognitionRef = useRef<any>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<BlobPart[]>([]);
+  const streamRef = useRef<MediaStream | null>(null);
 
-  const isSupported = Platform.OS === "web" &&
+  const isSupported =
+    Platform.OS === "web" &&
     typeof window !== "undefined" &&
-    !!(window.SpeechRecognition || (window as any).webkitSpeechRecognition);
+    !!navigator.mediaDevices?.getUserMedia &&
+    !!(window as any).MediaRecorder;
 
   useEffect(() => {
     if (!visible) {
@@ -43,58 +75,93 @@ export function VoiceCommandModal({ visible, onClose }: Props) {
       setEditText("");
       setAdded(false);
       setErrorMsg("");
+      stopStream();
     }
   }, [visible]);
 
-  const startListening = useCallback(() => {
+  function stopStream() {
+    streamRef.current?.getTracks().forEach(t => t.stop());
+    streamRef.current = null;
+    mediaRecorderRef.current = null;
+  }
+
+  const startListening = useCallback(async () => {
     if (!isSupported) return;
-
-    const SR = window.SpeechRecognition || (window as any).webkitSpeechRecognition;
-    const rec = new SR();
-    recognitionRef.current = rec;
-
-    rec.lang = "fr-FR";
-    rec.continuous = false;
-    rec.interimResults = false;
-    rec.maxAlternatives = 1;
-
-    setState("listening");
-    setTranscript("");
     setErrorMsg("");
+    setTranscript("");
 
-    rec.onresult = (event: any) => {
-      const text = event.results[0][0].transcript;
-      setTranscript(text);
-      setEditText(text);
-      setState("result");
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e: any) {
+      setErrorMsg(
+        e?.name === "NotAllowedError"
+          ? "Accès au microphone refusé. Autorise-le dans les réglages de Safari pour ce site (Réglages > Safari > Microphone)."
+          : "Impossible d'accéder au microphone sur cet appareil."
+      );
+      setState("error");
+      return;
+    }
+
+    streamRef.current = stream;
+    const mimeType = pickSupportedMimeType();
+    const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+    mediaRecorderRef.current = recorder;
+    chunksRef.current = [];
+
+    recorder.ondataavailable = (e: BlobEvent) => {
+      if (e.data.size > 0) chunksRef.current.push(e.data);
     };
 
-    rec.onerror = (event: any) => {
-      if (event.error === "no-speech") {
+    recorder.onstop = async () => {
+      const finalType = recorder.mimeType || mimeType || "audio/webm";
+      stopStream();
+      const blob = new Blob(chunksRef.current, { type: finalType });
+      if (blob.size < 500) {
         setErrorMsg("Aucune parole détectée. Réessaie.");
         setState("error");
-      } else if (event.error === "not-allowed") {
-        setErrorMsg("Accès au microphone refusé. Autorise-le dans ton navigateur.");
-        setState("error");
-      } else if (event.error === "network") {
-        setErrorMsg("network");
+        return;
+      }
+      setState("processing");
+      try {
+        const base64 = await blobToBase64(blob);
+        const res = await fetch("/api/transcribe", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ audio: base64, mimeType: blob.type }),
+        });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setErrorMsg(json?.error || "Erreur du service de transcription.");
+          setState("error");
+          return;
+        }
+        const text = String(json.text || "").trim();
+        if (!text) {
+          setErrorMsg("Aucune parole détectée. Réessaie.");
+          setState("error");
+          return;
+        }
+        setTranscript(text);
+        setEditText(text);
         setState("result");
-      } else {
-        setErrorMsg(`Erreur : ${event.error}`);
+      } catch (e) {
+        setErrorMsg("Impossible de contacter le service de transcription. Vérifie ta connexion.");
         setState("error");
       }
     };
 
-    rec.onend = () => {
-      if (state === "listening") setState("idle");
-    };
-
-    rec.start();
-  }, [isSupported, state]);
+    recorder.start();
+    setState("listening");
+  }, [isSupported]);
 
   function stopListening() {
-    recognitionRef.current?.stop();
-    setState("idle");
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.stop();
+    } else {
+      stopStream();
+      setState("idle");
+    }
   }
 
   async function handleAdd() {
@@ -138,17 +205,17 @@ export function VoiceCommandModal({ visible, onClose }: Props) {
         </View>
 
         <ScrollView style={styles.body} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.bodyContent}>
-          {/* Not supported on native Expo Go */}
+          {/* Pas supporté (natif Expo Go, ou navigateur sans micro/MediaRecorder) */}
           {!isSupported && (
             <View style={styles.centeredBlock}>
               <View style={[styles.iconCircle, { backgroundColor: colors.muted }]}>
                 <Feather name="mic-off" size={36} color={colors.mutedForeground} />
               </View>
               <Text style={[styles.noSupportTitle, { color: colors.text }]}>
-                Disponible sur téléphone 📱
+                Disponible sur le site web 🌐
               </Text>
               <Text style={[styles.noSupportSub, { color: colors.mutedForeground }]}>
-                La reconnaissance vocale fonctionne dans l'app native. En attendant, utilise le champ texte ci-dessous pour ajouter un article.
+                La commande vocale utilise le micro du navigateur : ouvre le site web de l'app pour l'utiliser. En attendant, utilise le champ texte ci-dessous pour ajouter un article.
               </Text>
               <View style={styles.manualSection}>
                 <TextInput
@@ -164,7 +231,7 @@ export function VoiceCommandModal({ visible, onClose }: Props) {
             </View>
           )}
 
-          {/* Web — idle */}
+          {/* idle */}
           {isSupported && state === "idle" && !transcript && (
             <View style={styles.centeredBlock}>
               <TouchableOpacity onPress={startListening} style={[styles.micBtn, { backgroundColor: colors.primary }]} activeOpacity={0.85}>
@@ -180,7 +247,7 @@ export function VoiceCommandModal({ visible, onClose }: Props) {
             </View>
           )}
 
-          {/* Listening */}
+          {/* Enregistrement en cours */}
           {isSupported && state === "listening" && (
             <View style={styles.centeredBlock}>
               <TouchableOpacity onPress={stopListening} activeOpacity={0.8}>
@@ -192,6 +259,15 @@ export function VoiceCommandModal({ visible, onClose }: Props) {
               <Text style={[styles.tapLabel, { color: colors.text }]}>J'écoute...</Text>
               <Text style={[styles.tapSub, { color: colors.mutedForeground }]}>Parle maintenant. Appuie pour arrêter.</Text>
               <ActivityIndicator color={colors.primary} style={{ marginTop: 12 }} />
+            </View>
+          )}
+
+          {/* Transcription en cours */}
+          {isSupported && state === "processing" && (
+            <View style={styles.centeredBlock}>
+              <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: 24 }} />
+              <Text style={[styles.tapLabel, { color: colors.text }]}>Transcription...</Text>
+              <Text style={[styles.tapSub, { color: colors.mutedForeground }]}>Un instant, on déchiffre ce que tu as dit.</Text>
             </View>
           )}
 
@@ -211,7 +287,7 @@ export function VoiceCommandModal({ visible, onClose }: Props) {
           )}
 
           {/* Result */}
-          {(state === "result" || (isSupported && transcript)) && !added && renderBottomForm()}
+          {isSupported && state === "result" && !added && renderBottomForm()}
 
           {/* Added confirmation */}
           {added && (
@@ -233,17 +309,6 @@ export function VoiceCommandModal({ visible, onClose }: Props) {
   function renderBottomForm() {
     return (
       <View style={styles.resultSection}>
-        {errorMsg === "network" && (
-          <View style={[styles.networkBanner, { backgroundColor: "#FEF3C7", borderColor: "#F59E0B" }]}>
-            <Feather name="wifi-off" size={16} color="#92400E" />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.networkTitle}>Micro indisponible dans l'aperçu</Text>
-              <Text style={styles.networkSub}>
-                Le micro vocal fonctionne sur ton téléphone avec Expo Go. Ici, tape l'ingrédient directement.
-              </Text>
-            </View>
-          </View>
-        )}
         {transcript ? (
           <View style={[styles.transcriptBubble, { backgroundColor: colors.muted }]}>
             <Feather name="mic" size={14} color={colors.mutedForeground} />
@@ -363,10 +428,4 @@ const styles = StyleSheet.create({
   relistenText: { fontSize: 14, fontWeight: "600" },
   addBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 14, borderRadius: 12 },
   addBtnText: { fontSize: 15, fontWeight: "700" },
-  networkBanner: {
-    flexDirection: "row", alignItems: "flex-start", gap: 10,
-    padding: 12, borderRadius: 10, borderWidth: 1, marginBottom: 8,
-  },
-  networkTitle: { fontSize: 13, fontWeight: "700", color: "#92400E", marginBottom: 2 },
-  networkSub: { fontSize: 12, color: "#92400E", lineHeight: 17 },
 });
