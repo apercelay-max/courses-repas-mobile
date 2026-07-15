@@ -11,14 +11,16 @@ import { useColors } from "@/hooks/useColors";
 import { useTheme } from "@/context/ThemeContext";
 import { GradientBackground } from "@/components/GradientBackground";
 import { THEME_LIST, type ThemeId } from "@/constants/themes";
+import { ACCENT_PRESETS } from "@/constants/accents";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 export default function ParametresScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const { db } = useDatabase();
-  const { theme, themeId, setThemeId } = useTheme();
+  const { theme, themeId, setThemeId, accentId, setAccentId, amoled, setAmoled } = useTheme();
   const [clearing, setClearing] = useState(false);
+  const accent2 = colors.accent2 ?? "#8B5CF6";
 
   const topPad = Platform.OS === "web" ? 67 : insets.top;
 
@@ -37,7 +39,7 @@ export default function ParametresScreen() {
   const metrics = [
     { label: "ARTICLES", value: totalInv, color: colors.primary },
     { label: "RECETTES", value: db.recipes.length, color: colors.warning },
-    { label: "REPAS", value: db.mealPlanEntries.length, color: "#8B5CF6" },
+    { label: "REPAS", value: db.mealPlanEntries.length, color: colors.accent2 ?? "#8B5CF6" },
   ];
 
   // Cartes façon "workout card" PPL : rail coloré à gauche + contenu + chevron
@@ -100,7 +102,7 @@ export default function ParametresScreen() {
         {/* ── Header façon PPL : badge dégradé + titre + tagline ── */}
         <View style={[styles.header, { borderBottomColor: colors.border }]}>
           <LinearGradient
-            colors={[colors.primary, "#8B5CF6"]}
+            colors={[colors.primary, accent2]}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 1 }}
             style={styles.logoBadge}
@@ -241,6 +243,68 @@ export default function ParametresScreen() {
           </View>
         </View>
 
+        {/* ── Couleur d'accent (même palette que PPL Tracker) ── */}
+        <View style={styles.section}>
+          <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>COULEUR D'ACCENT</Text>
+          <View style={[styles.accentCard, { backgroundColor: colors.card, borderColor: colors.cardBorder }]}>
+            <View style={styles.accentRow}>
+              {/* Auto = couleur du thème */}
+              <TouchableOpacity style={styles.accentItem} onPress={() => setAccentId("auto")} activeOpacity={0.8}>
+                <View style={[styles.accentDot, { backgroundColor: colors.muted, borderColor: colors.border, borderWidth: 1 }]}>
+                  <Feather name="refresh-cw" size={15} color={colors.mutedForeground} />
+                  {accentId === "auto" && (
+                    <View style={styles.accentCheck}>
+                      <Feather name="check" size={11} color="#fff" />
+                    </View>
+                  )}
+                </View>
+                <Text style={[styles.accentName, { color: colors.text }]}>Auto</Text>
+              </TouchableOpacity>
+
+              {ACCENT_PRESETS.map(a => (
+                <TouchableOpacity key={a.id} style={styles.accentItem} onPress={() => setAccentId(a.id)} activeOpacity={0.8}>
+                  <LinearGradient
+                    colors={[a.c1, a.c2]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.accentDot}
+                  >
+                    {accentId === a.id && (
+                      <View style={styles.accentCheck}>
+                        <Feather name="check" size={11} color="#fff" />
+                      </View>
+                    )}
+                  </LinearGradient>
+                  <Text style={[styles.accentName, { color: colors.text }]}>{a.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <Text style={[styles.accentHint, { color: colors.mutedForeground }]}>
+              La même palette que PPL Tracker — s'applique à toute l'app, quel que soit le thème.
+            </Text>
+          </View>
+
+          {/* Mode AMOLED : carte à rail façon PPL */}
+          <TouchableOpacity
+            onPress={() => setAmoled(!amoled)}
+            style={[styles.railCard, { backgroundColor: colors.card, borderColor: colors.cardBorder, marginTop: 10, marginBottom: 0 }]}
+            activeOpacity={0.8}
+          >
+            <View style={[styles.rail, { backgroundColor: "#00000055", borderRightColor: colors.border }]}>
+              <Feather name="moon" size={18} color={theme.isDark ? colors.text : colors.mutedForeground} />
+            </View>
+            <View style={styles.railContent}>
+              <Text style={[styles.railTitle, { color: colors.text }]}>Mode AMOLED</Text>
+              <Text style={[styles.railSub, { color: colors.mutedForeground }]}>
+                Noir pur sur les thèmes sombres — comme PPL
+              </Text>
+            </View>
+            <View style={[styles.toggle, { backgroundColor: amoled ? colors.primary : colors.muted }]}>
+              <View style={[styles.toggleKnob, { transform: [{ translateX: amoled ? 20 : 2 }] }]} />
+            </View>
+          </TouchableOpacity>
+        </View>
+
         {/* ── Carte teintée façon "Nutrition post-training" ── */}
         <View style={styles.section}>
           <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>APPLICATION</Text>
@@ -365,6 +429,22 @@ const styles = StyleSheet.create({
   themeCheck: { width: 22, height: 22, borderRadius: 11, backgroundColor: "rgba(0,0,0,0.35)", alignItems: "center", justifyContent: "center" },
   themeEmoji: { position: "absolute", bottom: 8, left: 10, fontSize: 22 },
   themeName: { fontSize: 11, fontWeight: "600", textAlign: "center" },
+
+  accentCard: { borderRadius: 18, padding: 14, borderWidth: 1 },
+  accentRow: { flexDirection: "row", flexWrap: "wrap", gap: 14, justifyContent: "flex-start" },
+  accentItem: { alignItems: "center", gap: 5, width: 52 },
+  accentDot: {
+    width: 44, height: 44, borderRadius: 22,
+    alignItems: "center", justifyContent: "center",
+  },
+  accentCheck: {
+    position: "absolute", top: -2, right: -2,
+    width: 18, height: 18, borderRadius: 9,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    alignItems: "center", justifyContent: "center",
+  },
+  accentName: { fontSize: 10, fontWeight: "600" },
+  accentHint: { fontSize: 11, marginTop: 12, lineHeight: 15 },
 
   tintCard: { borderRadius: 14, padding: 14, borderWidth: 1 },
   tintCardTitle: { fontSize: 12, fontWeight: "700", marginBottom: 5 },
