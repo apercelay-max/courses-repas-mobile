@@ -35,6 +35,9 @@ interface DatabaseContextType {
   addManualShoppingItem: (ingredientName: string, quantity: number, unit: string) => Promise<void>;
   markItemBought: (manualItemId: string) => Promise<void>;
   removeShoppingItem: (id: string) => Promise<void>;
+  // Remplace toute la base (utilisé par la synchro cloud : restauration
+  // depuis le cloud, ou résolution d'un conflit entre appareils).
+  replaceDb: (newDb: Database) => Promise<void>;
 }
 
 const DatabaseContext = createContext<DatabaseContextType | null>(null);
@@ -253,6 +256,7 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
       addInventoryItem, addInventoryItemsBatch, updateInventoryItem, removeInventoryItem, toggleFavorite,
       addRecipeWithIngredients, addMealPlanEntry, removeMealPlanEntry, cookMealPlanEntry,
       addManualShoppingItem, markItemBought, removeShoppingItem,
+      replaceDb: save,
     }}>
       {children}
     </DatabaseContext.Provider>
