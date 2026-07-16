@@ -6,10 +6,9 @@ import {
 import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useColors } from "@/hooks/useColors";
 import { useDatabase } from "@/context/DatabaseContext";
-import { extractReceiptItems, CLAUDE_KEY_STORAGE } from "@/lib/claude";
+import { extractReceiptItemsLocal } from "@/lib/receiptOcr";
 import { UNITS } from "@/lib/units";
 import type { Location } from "@/types/database";
 
@@ -38,11 +37,15 @@ export function ReceiptScanModal({ visible, onClose }: Props) {
   const { addInventoryItemsBatch } = useDatabase();
 
   const [state, setState] = useState<ScanState>("idle");
-  const [apiKey, setApiKey] = useState<string | null>(null);
   const [items, setItems] = useState<ReviewItem[]>([]);
   const [location, setLocation] = useState<Location>("frigo");
   const [errorMsg, setErrorMsg] = useState("");
   const [isSaving, setIsSaving] = useState(false);
+  const [progress, setProgress] = useState(0);
+
+  // L'OCR local (Tesseract) tourne dans le navigateur — pas de clé API,
+  // la photo ne quitte jamais l'appareil. Web uniquement.
+  const isSupported = Platform.OS === "web";
 
   useEffect(() => {
     if (visible) {
@@ -50,7 +53,7 @@ export function ReceiptScanModal({ visible, onClose }: Props) {
       setItems([]);
       setErrorMsg("");
       setIsSaving(false);
-      AsyncStorage.getItem(CLAUDE_KEY_STORAGE).then(v => setApiKey(v && v.trim() ? v.trim() : null));
+      setProgress(0);
     }
   }, [visible]);
 
@@ -64,9 +67,9 @@ export function ReceiptScanModal({ visible, onClose }: Props) {
           setState("error");
           return;
         }
-        result = await ImagePicker.launchCameraAsync({ base64: true, quality: 0.5, exif: false });
+        result = await ImagePicker.launchCameraAsync({ base64: true, quality: 0.8, exif: false });
       } else {
-        result = await ImagePicker.launchImageLibraryAsync({ base64: true, quality: 0.5, exif: false, mediaTypes: ["images"] });
+        result = await ImagePicker.launchImageLibraryAsync({ base64: true, quality: 0.8, exif: false, mediaTypes: ["images"] });
       }
       if (result.canceled || !result.assets?.length) return;
       const asset = result.assets[0];
@@ -83,12 +86,12 @@ export function ReceiptScanModal({ visible, onClose }: Props) {
   }
 
   async function analyze(base64: string, mime?: string | null) {
-    if (!apiKey) return;
     setState("processing");
+    setProgress(0);
     try {
-      const extracted = await extractReceiptItems(base64, mime, apiKey);
+      const extracted = await extractReceiptItemsLocal(base64, mime, setProgress);
       if (extracted.length === 0) {
-        setErrorMsg("Aucun article trouvé sur cette photo. Essaie avec une photo plus nette du ticket.");
+        setErrorMsg("Aucun article trouvé sur cette photo. Essaie avec une photo plus nette du ticket, bien à plat et bien éclairée.");
         setState("error");
         return;
       }
@@ -153,22 +156,21 @@ export function ReceiptScanModal({ visible, onClose }: Props) {
 
         <ScrollView style={styles.body} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.bodyContent}>
 
-          {/* Pas de clé API */}
-          {!apiKey && (
+          {/* Natif (Expo Go) : dispo sur le site web */}
+          {!isSupported && (
             <View style={styles.centeredBlock}>
               <View style={[styles.iconCircle, { backgroundColor: colors.muted }]}>
-                <Feather name="key" size={36} color={colors.mutedForeground} />
+                <Feather name="globe" size={36} color={colors.mutedForeground} />
               </View>
-              <Text style={[styles.bigLabel, { color: colors.text }]}>Clé API manquante</Text>
+              <Text style={[styles.bigLabel, { color: colors.text }]}>Disponible sur le site web 🌐</Text>
               <Text style={[styles.subLabel, { color: colors.mutedForeground }]}>
-                Le scan de ticket utilise l'IA de Claude pour lire ta photo.
-                Ajoute ta clé API dans l'onglet Réglages, section « Intelligence artificielle », puis reviens ici.
+                La lecture du ticket se fait directement dans le navigateur (sans clé API). Ouvre le site web de l'app pour l'utiliser.
               </Text>
             </View>
           )}
 
           {/* Choix photo */}
-          {apiKey && state === "idle" && (
+          {isSupported && state === "idle" && (
             <View style={styles.centeredBlock}>
               <View style={[styles.iconCircle, { backgroundColor: colors.primary + "20" }]}>
                 <Feather name="file-text" size={36} color={colors.primary} />
@@ -185,22 +187,25 @@ export function ReceiptScanModal({ visible, onClose }: Props) {
                 <Feather name="image" size={18} color={colors.text} />
                 <Text style={[styles.secondaryBtnText, { color: colors.text }]}>Choisir dans la galerie</Text>
               </TouchableOpacity>
+              <Text style={[styles.privacyNote, { color: colors.mutedForeground }]}>
+                🔒 Lecture 100 % locale — sans clé API, ta photo ne quitte pas ton appareil
+              </Text>
             </View>
           )}
 
           {/* Analyse en cours */}
-          {state === "processing" && (
+          {isSupported && state === "processing" && (
             <View style={styles.centeredBlock}>
               <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: 24 }} />
-              <Text style={[styles.bigLabel, { color: colors.text }]}>Lecture du ticket...</Text>
+              <Text style={[styles.bigLabel, { color: colors.text }]}>Lecture du ticket... {progress > 0 ? `${progress}%` : ""}</Text>
               <Text style={[styles.subLabel, { color: colors.mutedForeground }]}>
-                Claude déchiffre les libellés et prépare la liste des articles.
+                Le texte est déchiffré directement dans ton navigateur. Le premier scan peut prendre un peu plus longtemps.
               </Text>
             </View>
           )}
 
           {/* Erreur */}
-          {state === "error" && (
+          {isSupported && state === "error" && (
             <View style={styles.centeredBlock}>
               <View style={[styles.iconCircle, { backgroundColor: "#FEE2E2" }]}>
                 <Feather name="alert-circle" size={36} color="#EF4444" />
@@ -215,7 +220,7 @@ export function ReceiptScanModal({ visible, onClose }: Props) {
           )}
 
           {/* Relecture des articles */}
-          {state === "review" && (
+          {isSupported && state === "review" && (
             <View>
               <Text style={[styles.fieldLabel, { color: colors.mutedForeground }]}>
                 {items.length} ARTICLE{items.length > 1 ? "S" : ""} TROUVÉ{items.length > 1 ? "S" : ""} — VÉRIFIE ET CORRIGE
@@ -323,6 +328,7 @@ const styles = StyleSheet.create({
   iconCircle: { width: 80, height: 80, borderRadius: 40, alignItems: "center", justifyContent: "center" },
   bigLabel: { fontSize: 21, fontWeight: "700", textAlign: "center" },
   subLabel: { fontSize: 14, textAlign: "center", lineHeight: 20, paddingHorizontal: 12 },
+  privacyNote: { fontSize: 12, textAlign: "center", fontStyle: "italic", marginTop: 4 },
   mainBtn: {
     flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
     paddingVertical: 14, paddingHorizontal: 24, borderRadius: 12, marginTop: 8,
