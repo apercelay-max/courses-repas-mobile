@@ -29,7 +29,7 @@ function getSpeechRecognition(): any | null {
 
 export function VoiceCommandModal({ visible, onClose }: Props) {
   const colors = useColors();
-  const { db, addInventoryItem } = useDatabase();
+  const { db, addInventoryItemsBatch } = useDatabase();
 
   const [state, setState] = useState<VoiceState>("idle");
   const [transcript, setTranscript] = useState("");
@@ -136,14 +136,14 @@ export function VoiceCommandModal({ visible, onClose }: Props) {
       i.aliases.some(a => a.toLowerCase() === name.toLowerCase())
     );
 
-    await addInventoryItem({
-      ingredientId: ing?.id ?? `ing_${Date.now().toString(36)}`,
-      location,
+    // Crée l'ingrédient s'il n'existe pas encore, avec le nom dicté/tapé —
+    // fini les articles « Inconnu » dans l'inventaire.
+    await addInventoryItemsBatch([{
+      name,
       quantity: qty,
       unit: ing?.defaultUnit ?? "piece",
-      expiryDate: null,
-      isFavorite: false,
-    });
+      location,
+    }]);
 
     if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setAdded(true);
