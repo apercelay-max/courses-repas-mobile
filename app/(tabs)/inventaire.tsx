@@ -44,7 +44,7 @@ export default function InventaireScreen() {
   const colors = useColors();
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
-  const { db, addInventoryItem, removeInventoryItem, updateInventoryItem, toggleFavorite } = useDatabase();
+  const { db, addInventoryItemsBatch, removeInventoryItem, updateInventoryItem, toggleFavorite } = useDatabase();
   const [activeLocation, setActiveLocation] = useState<Location>("frigo");
   const [search, setSearch] = useState("");
   const [showModal, setShowModal] = useState(false);
@@ -86,14 +86,15 @@ export default function InventaireScreen() {
       i.aliases.some(a => a.toLowerCase() === form.name.toLowerCase().trim())
     );
     const unit = form.unit || (ing?.defaultUnit ?? "piece");
-    await addInventoryItem({
-      ingredientId: ing?.id ?? `ing_${Date.now().toString(36)}`,
-      location: form.location,
+    // Crée l'ingrédient s'il n'existe pas encore, avec le nom tapé —
+    // fini les articles « Inconnu » dans l'inventaire.
+    await addInventoryItemsBatch([{
+      name: form.name.trim(),
       quantity: qty,
       unit,
+      location: form.location,
       expiryDate: form.expiryDate || null,
-      isFavorite: false,
-    });
+    }]);
     if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setShowModal(false);
     setForm({ name: "", quantity: "1", unit: "piece", location: "frigo", expiryDate: "" });
