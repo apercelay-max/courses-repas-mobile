@@ -52,6 +52,9 @@ export function VoiceCommandModal({ visible, onClose }: Props) {
 
   const recognitionRef = useRef<any>(null);
   const gotResultRef = useRef(false);
+  const finalTextRef = useRef("");
+  const lastInterimRef = useRef("");
+  const autoRetriedRef = useRef(false);
 
   const SR = getSpeechRecognition();
   const isSupported = !!SR;
@@ -85,37 +88,57 @@ export function VoiceCommandModal({ visible, onClose }: Props) {
     }
   }
 
-  const startListening = useCallback(() => {
+  // isRetry=true quand c'est un redémarrage silencieux déclenché par le code
+  // (Safari coupe souvent le micro trop tôt) : on ne réinitialise pas tout.
+  const startListening = useCallback((isRetry: boolean = false) => {
     if (!SR) return;
     setErrorMsg("");
-    setTranscript("");
+    if (!isRetry) {
+      setTranscript("");
+      autoRetriedRef.current = false;
+    }
     gotResultRef.current = false;
+    finalTextRef.current = "";
+    lastInterimRef.current = "";
 
     const rec = new SR();
     recognitionRef.current = rec;
     rec.lang = "fr-FR";
-    rec.interimResults = false;
+    // interimResults + continuous : Safari (surtout sur iPhone) coupe très
+    // vite la reconnaissance s'il ne détecte pas de son dans la première
+    // fraction de seconde, et peut découper une phrase en plusieurs bouts
+    // "finaux" s'il y a la moindre micro-pause (ex: "deux tomates" [pause]
+    // "et trois bananes"). On accumule donc tous les bouts finaux reçus
+    // pendant toute la session, et on ne traite le résultat qu'à la toute
+    // fin (onend) — jamais sur le premier bout entendu.
+    rec.interimResults = true;
     rec.maxAlternatives = 1;
-    rec.continuous = false;
+    rec.continuous = true;
 
     rec.onresult = (event: any) => {
-      const text = String(event.results?.[0]?.[0]?.transcript || "").trim();
-      if (text) {
-        gotResultRef.current = true;
-        setTranscript(text);
-        applyParsedText(text);
-        setState("result");
+      let interimText = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i];
+        const text = String(result?.[0]?.transcript || "");
+        if (result.isFinal) {
+          finalTextRef.current = `${finalTextRef.current} ${text}`.trim();
+        } else {
+          interimText += text;
+        }
       }
+      if (interimText.trim()) lastInterimRef.current = interimText.trim();
     };
 
     rec.onerror = (event: any) => {
       if (gotResultRef.current) return;
       const code = event?.error;
+      // "no-speech" est géré dans onend juste après (avec retentative
+      // automatique / repli sur le texte intermédiaire) pour éviter d'
+      // afficher une erreur pour un simple faux départ du micro.
+      if (code === "no-speech") return;
       setErrorMsg(
         code === "not-allowed" || code === "service-not-allowed"
           ? "Accès au micro refusé. Autorise le micro pour ce site dans les réglages du navigateur."
-          : code === "no-speech"
-          ? "Aucune parole détectée. Réessaie en parlant un peu plus fort."
           : code === "network"
           ? "La reconnaissance vocale a besoin d'internet. Vérifie ta connexion."
           : "La reconnaissance vocale a échoué. Réessaie."
@@ -125,14 +148,31 @@ export function VoiceCommandModal({ visible, onClose }: Props) {
 
     rec.onend = () => {
       recognitionRef.current = null;
-      // Fini sans résultat ni erreur → probablement rien entendu
-      setState(prev => {
-        if (prev === "listening" && !gotResultRef.current) {
-          setErrorMsg("Aucune parole détectée. Réessaie.");
-          return "error";
-        }
-        return prev;
-      });
+      if (gotResultRef.current) return; // déjà traité entre-temps
+
+      // On privilégie le texte "final" accumulé pendant toute la session ;
+      // s'il n'y en a pas (le micro a coupé avant), on se rabat sur le
+      // dernier texte intermédiaire capté plutôt que d'abandonner.
+      const text = finalTextRef.current || lastInterimRef.current;
+      if (text) {
+        gotResultRef.current = true;
+        setTranscript(text);
+        applyParsedText(text);
+        setState("result");
+        return;
+      }
+
+      if (!autoRetriedRef.current) {
+        // Vraiment rien capté : le micro n'a souvent pas eu le temps de
+        // démarrer. On retente une fois, discrètement, avant d'afficher une
+        // erreur.
+        autoRetriedRef.current = true;
+        setTimeout(() => startListening(true), 150);
+        return;
+      }
+
+      setErrorMsg("Aucune parole détectée. Parle juste après avoir appuyé sur le micro.");
+      setState("error");
     };
 
     try {
@@ -261,7 +301,7 @@ export function VoiceCommandModal({ visible, onClose }: Props) {
           {/* idle */}
           {isSupported && state === "idle" && (
             <View style={styles.centeredBlock}>
-              <TouchableOpacity onPress={startListening} style={[styles.micBtn, { backgroundColor: colors.primary }]} activeOpacity={0.85}>
+              <TouchableOpacity onPress={() => startListening()} style={[styles.micBtn, { backgroundColor: colors.primary }]} activeOpacity={0.85}>
                 <Feather name="mic" size={40} color="#fff" />
               </TouchableOpacity>
               <Text style={[styles.tapLabel, { color: colors.text }]}>Appuie pour parler</Text>
@@ -303,7 +343,7 @@ export function VoiceCommandModal({ visible, onClose }: Props) {
               </View>
               <Text style={[styles.tapLabel, { color: colors.text }]}>Oups !</Text>
               <Text style={[styles.tapSub, { color: colors.mutedForeground }]}>{errorMsg}</Text>
-              <TouchableOpacity onPress={startListening} style={[styles.retryBtn, { backgroundColor: colors.muted }]}>
+              <TouchableOpacity onPress={() => startListening()} style={[styles.retryBtn, { backgroundColor: colors.muted }]}>
                 <Feather name="refresh-cw" size={16} color={colors.text} />
                 <Text style={[styles.retryBtnText, { color: colors.text }]}>Réessayer</Text>
               </TouchableOpacity>
