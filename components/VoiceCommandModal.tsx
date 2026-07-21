@@ -7,6 +7,7 @@ import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useColors } from "@/hooks/useColors";
 import { useDatabase } from "@/context/DatabaseContext";
+import { parseVoiceItems } from "@/lib/voiceCommandParser";
 
 interface Props {
   visible: boolean;
@@ -14,6 +15,11 @@ interface Props {
 }
 
 type VoiceState = "idle" | "listening" | "result" | "error";
+
+interface EditableItem {
+  name: string;
+  quantity: string;
+}
 
 const LOCATION_LABELS = { frigo: "Frigo 🧊", placard: "Placard 📦", congelateur: "Congélateur ❄️" } as const;
 type LocationKey = keyof typeof LOCATION_LABELS;
@@ -27,17 +33,22 @@ function getSpeechRecognition(): any | null {
   return w.SpeechRecognition || w.webkitSpeechRecognition || null;
 }
 
+function emptyItem(): EditableItem {
+  return { name: "", quantity: "1" };
+}
+
 export function VoiceCommandModal({ visible, onClose }: Props) {
   const colors = useColors();
   const { db, addInventoryItemsBatch } = useDatabase();
 
   const [state, setState] = useState<VoiceState>("idle");
   const [transcript, setTranscript] = useState("");
-  const [editText, setEditText] = useState("");
+  const [manualText, setManualText] = useState("");
+  const [items, setItems] = useState<EditableItem[]>([]);
   const [location, setLocation] = useState<LocationKey>("frigo");
-  const [quantity, setQuantity] = useState("1");
   const [errorMsg, setErrorMsg] = useState("");
   const [added, setAdded] = useState(false);
+  const [addedCount, setAddedCount] = useState(0);
 
   const recognitionRef = useRef<any>(null);
   const gotResultRef = useRef(false);
@@ -49,7 +60,8 @@ export function VoiceCommandModal({ visible, onClose }: Props) {
     if (!visible) {
       setState("idle");
       setTranscript("");
-      setEditText("");
+      setManualText("");
+      setItems([]);
       setAdded(false);
       setErrorMsg("");
       stopRecognition();
@@ -59,6 +71,18 @@ export function VoiceCommandModal({ visible, onClose }: Props) {
   function stopRecognition() {
     try { recognitionRef.current?.abort?.(); } catch {}
     recognitionRef.current = null;
+  }
+
+  // Transforme le texte brut (dicté ou tapé) en une liste d'articles
+  // modifiables : "deux tomates et trois bananes" → deux lignes séparées,
+  // chacune avec son nom et sa quantité déjà pré-remplie.
+  function applyParsedText(text: string) {
+    const parsed = parseVoiceItems(text);
+    if (parsed.length > 0) {
+      setItems(parsed.map(p => ({ name: p.name, quantity: String(p.quantity) })));
+    } else {
+      setItems([emptyItem()]);
+    }
   }
 
   const startListening = useCallback(() => {
@@ -79,7 +103,7 @@ export function VoiceCommandModal({ visible, onClose }: Props) {
       if (text) {
         gotResultRef.current = true;
         setTranscript(text);
-        setEditText(text);
+        applyParsedText(text);
         setState("result");
       }
     };
@@ -124,33 +148,63 @@ export function VoiceCommandModal({ visible, onClose }: Props) {
     try { recognitionRef.current?.stop?.(); } catch {}
   }
 
-  async function handleAdd() {
-    const name = editText.trim();
-    if (!name) return;
+  function handleManualValidate() {
+    const text = manualText.trim();
+    if (!text) return;
+    setTranscript(text);
+    applyParsedText(text);
+    setState("result");
+  }
 
-    const qty = parseFloat(quantity);
-    if (isNaN(qty) || qty <= 0) return;
+  function updateItemName(index: number, name: string) {
+    setItems(prev => prev.map((it, i) => (i === index ? { ...it, name } : it)));
+  }
 
-    const ing = db.ingredients.find(i =>
-      i.canonicalName.toLowerCase() === name.toLowerCase() ||
-      i.aliases.some(a => a.toLowerCase() === name.toLowerCase())
-    );
+  function updateItemQuantity(index: number, quantity: string) {
+    setItems(prev => prev.map((it, i) => (i === index ? { ...it, quantity } : it)));
+  }
+
+  function removeItemAt(index: number) {
+    setItems(prev => prev.filter((_, i) => i !== index));
+  }
+
+  function addEmptyItem() {
+    setItems(prev => [...prev, emptyItem()]);
+  }
+
+  async function handleAddAll() {
+    const validItems = items
+      .map(it => ({ name: it.name.trim(), qty: parseFloat(it.quantity.replace(",", ".")) }))
+      .filter(it => it.name && !isNaN(it.qty) && it.qty > 0);
+
+    if (validItems.length === 0) return;
 
     // Crée l'ingrédient s'il n'existe pas encore, avec le nom dicté/tapé —
     // fini les articles « Inconnu » dans l'inventaire.
-    await addInventoryItemsBatch([{
-      name,
-      quantity: qty,
-      unit: ing?.defaultUnit ?? "piece",
-      location,
-    }]);
+    const payload = validItems.map(({ name, qty }) => {
+      const ing = db.ingredients.find(i =>
+        i.canonicalName.toLowerCase() === name.toLowerCase() ||
+        i.aliases.some(a => a.toLowerCase() === name.toLowerCase())
+      );
+      return {
+        name,
+        quantity: qty,
+        unit: ing?.defaultUnit ?? "piece",
+        location,
+      };
+    });
+
+    await addInventoryItemsBatch(payload);
 
     if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    setAddedCount(validItems.length);
     setAdded(true);
     setTimeout(() => {
       onClose();
     }, 1200);
   }
+
+  const hasValidItem = items.some(it => it.name.trim() && parseFloat(it.quantity.replace(",", ".")) > 0);
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
@@ -166,7 +220,7 @@ export function VoiceCommandModal({ visible, onClose }: Props) {
 
         <ScrollView style={styles.body} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.bodyContent}>
           {/* Pas supporté (natif Expo Go, ou navigateur sans reconnaissance vocale) */}
-          {!isSupported && (
+          {!isSupported && state !== "result" && (
             <View style={styles.centeredBlock}>
               <View style={[styles.iconCircle, { backgroundColor: colors.muted }]}>
                 <Feather name="mic-off" size={36} color={colors.mutedForeground} />
@@ -175,34 +229,50 @@ export function VoiceCommandModal({ visible, onClose }: Props) {
                 Micro non disponible ici
               </Text>
               <Text style={[styles.noSupportSub, { color: colors.mutedForeground }]}>
-                La commande vocale utilise la reconnaissance vocale du navigateur (Chrome ou Safari). En attendant, utilise le champ texte ci-dessous pour ajouter un article.
+                La commande vocale utilise la reconnaissance vocale du navigateur (Chrome ou Safari). En attendant, tape ta liste ci-dessous.
               </Text>
               <View style={styles.manualSection}>
                 <TextInput
                   style={[styles.textInput, { backgroundColor: colors.muted, color: colors.text, borderColor: colors.border }]}
-                  placeholder="Nom de l'article..."
+                  placeholder='Ex : "2 tomates, 3 bananes"'
                   placeholderTextColor={colors.mutedForeground}
-                  value={editText}
-                  onChangeText={setEditText}
+                  value={manualText}
+                  onChangeText={setManualText}
                   autoFocus
+                  onSubmitEditing={handleManualValidate}
                 />
-                {renderBottomForm()}
+                <Text style={[styles.example, { color: colors.mutedForeground, marginTop: 6 }]}>
+                  Dis ou écris un nombre devant chaque ingrédient pour préciser la quantité.
+                </Text>
+                <TouchableOpacity
+                  onPress={handleManualValidate}
+                  disabled={!manualText.trim()}
+                  style={[styles.addBtn, { backgroundColor: manualText.trim() ? colors.primary : colors.muted, marginTop: 14 }]}
+                >
+                  <Feather name="list" size={18} color={manualText.trim() ? "#fff" : colors.mutedForeground} />
+                  <Text style={[styles.addBtnText, { color: manualText.trim() ? "#fff" : colors.mutedForeground }]}>
+                    Analyser ma liste
+                  </Text>
+                </TouchableOpacity>
               </View>
             </View>
           )}
 
           {/* idle */}
-          {isSupported && state === "idle" && !transcript && (
+          {isSupported && state === "idle" && (
             <View style={styles.centeredBlock}>
               <TouchableOpacity onPress={startListening} style={[styles.micBtn, { backgroundColor: colors.primary }]} activeOpacity={0.85}>
                 <Feather name="mic" size={40} color="#fff" />
               </TouchableOpacity>
               <Text style={[styles.tapLabel, { color: colors.text }]}>Appuie pour parler</Text>
               <Text style={[styles.tapSub, { color: colors.mutedForeground }]}>
-                Dis le nom d'un ingrédient à ajouter à ton inventaire
+                Dis un ou plusieurs ingrédients à ajouter à ton inventaire
               </Text>
               <Text style={[styles.example, { color: colors.mutedForeground }]}>
-                Ex : "poulet", "lait entier", "œufs"
+                Ex : "deux tomates et trois bananes"
+              </Text>
+              <Text style={[styles.example, { color: colors.mutedForeground }]}>
+                Dis un nombre devant chaque ingrédient pour préciser la quantité
               </Text>
               <Text style={[styles.example, { color: colors.mutedForeground }]}>
                 🔒 Sans clé API — reconnaissance intégrée au navigateur
@@ -240,8 +310,8 @@ export function VoiceCommandModal({ visible, onClose }: Props) {
             </View>
           )}
 
-          {/* Result */}
-          {isSupported && state === "result" && !added && renderBottomForm()}
+          {/* Result — liste d'articles modifiables (1 ou plusieurs) */}
+          {state === "result" && !added && renderBottomForm()}
 
           {/* Added confirmation */}
           {added && (
@@ -251,7 +321,9 @@ export function VoiceCommandModal({ visible, onClose }: Props) {
               </View>
               <Text style={[styles.tapLabel, { color: colors.text }]}>Ajouté !</Text>
               <Text style={[styles.tapSub, { color: colors.mutedForeground }]}>
-                "{editText}" a été ajouté à ton inventaire
+                {addedCount > 1
+                  ? `${addedCount} articles ont été ajoutés à ton inventaire`
+                  : "L'article a été ajouté à ton inventaire"}
               </Text>
             </View>
           )}
@@ -270,24 +342,48 @@ export function VoiceCommandModal({ visible, onClose }: Props) {
           </View>
         ) : null}
 
-        <Text style={[styles.fieldLabel, { color: colors.mutedForeground }]}>INGRÉDIENT</Text>
-        <TextInput
-          style={[styles.textInput, { backgroundColor: colors.muted, color: colors.text, borderColor: colors.border }]}
-          value={editText}
-          onChangeText={setEditText}
-          placeholder="Nom de l'ingrédient..."
-          placeholderTextColor={colors.mutedForeground}
-        />
+        {items.length > 1 ? (
+          <Text style={[styles.multiHint, { color: colors.mutedForeground }]}>
+            {items.length} ingrédients détectés — vérifie les quantités avant d'ajouter
+          </Text>
+        ) : null}
 
-        <Text style={[styles.fieldLabel, { color: colors.mutedForeground }]}>QUANTITÉ</Text>
-        <TextInput
-          style={[styles.textInput, { backgroundColor: colors.muted, color: colors.text, borderColor: colors.border }]}
-          value={quantity}
-          onChangeText={setQuantity}
-          keyboardType="numeric"
-          placeholder="1"
-          placeholderTextColor={colors.mutedForeground}
-        />
+        {items.map((item, index) => (
+          <View key={index} style={[styles.itemRow, { borderColor: colors.border }]}>
+            <View style={styles.itemRowHeader}>
+              <Text style={[styles.fieldLabel, { color: colors.mutedForeground, marginTop: 0 }]}>
+                INGRÉDIENT {items.length > 1 ? index + 1 : ""}
+              </Text>
+              {items.length > 1 ? (
+                <TouchableOpacity onPress={() => removeItemAt(index)} style={styles.removeItemBtn}>
+                  <Feather name="trash-2" size={16} color={colors.mutedForeground} />
+                </TouchableOpacity>
+              ) : null}
+            </View>
+            <TextInput
+              style={[styles.textInput, { backgroundColor: colors.muted, color: colors.text, borderColor: colors.border }]}
+              value={item.name}
+              onChangeText={text => updateItemName(index, text)}
+              placeholder="Nom de l'ingrédient..."
+              placeholderTextColor={colors.mutedForeground}
+            />
+
+            <Text style={[styles.fieldLabel, { color: colors.mutedForeground }]}>QUANTITÉ</Text>
+            <TextInput
+              style={[styles.textInput, { backgroundColor: colors.muted, color: colors.text, borderColor: colors.border }]}
+              value={item.quantity}
+              onChangeText={text => updateItemQuantity(index, text)}
+              keyboardType="numeric"
+              placeholder="1"
+              placeholderTextColor={colors.mutedForeground}
+            />
+          </View>
+        ))}
+
+        <TouchableOpacity onPress={addEmptyItem} style={styles.addItemBtn}>
+          <Feather name="plus-circle" size={16} color={colors.primary} />
+          <Text style={[styles.addItemText, { color: colors.primary }]}>Ajouter un autre ingrédient</Text>
+        </TouchableOpacity>
 
         <Text style={[styles.fieldLabel, { color: colors.mutedForeground }]}>EMPLACEMENT</Text>
         <View style={styles.locationRow}>
@@ -307,7 +403,7 @@ export function VoiceCommandModal({ visible, onClose }: Props) {
         <View style={styles.actionRow}>
           {isSupported && (
             <TouchableOpacity
-              onPress={() => { setTranscript(""); setEditText(""); setState("idle"); }}
+              onPress={() => { setTranscript(""); setItems([]); setState("idle"); }}
               style={[styles.relistenBtn, { backgroundColor: colors.muted }]}
             >
               <Feather name="mic" size={16} color={colors.text} />
@@ -315,13 +411,13 @@ export function VoiceCommandModal({ visible, onClose }: Props) {
             </TouchableOpacity>
           )}
           <TouchableOpacity
-            onPress={handleAdd}
-            disabled={!editText.trim()}
-            style={[styles.addBtn, { backgroundColor: editText.trim() ? colors.primary : colors.muted, flex: 1 }]}
+            onPress={handleAddAll}
+            disabled={!hasValidItem}
+            style={[styles.addBtn, { backgroundColor: hasValidItem ? colors.primary : colors.muted, flex: 1 }]}
           >
-            <Feather name="plus" size={18} color={editText.trim() ? "#fff" : colors.mutedForeground} />
-            <Text style={[styles.addBtnText, { color: editText.trim() ? "#fff" : colors.mutedForeground }]}>
-              Ajouter à l'inventaire
+            <Feather name="plus" size={18} color={hasValidItem ? "#fff" : colors.mutedForeground} />
+            <Text style={[styles.addBtnText, { color: hasValidItem ? "#fff" : colors.mutedForeground }]}>
+              {items.length > 1 ? `Ajouter ${items.length} articles` : "Ajouter à l'inventaire"}
             </Text>
           </TouchableOpacity>
         </View>
@@ -372,6 +468,12 @@ const styles = StyleSheet.create({
     padding: 12, borderRadius: 10, marginBottom: 8,
   },
   transcriptRaw: { fontSize: 14, fontStyle: "italic", flex: 1 },
+  multiHint: { fontSize: 13, marginBottom: 4, fontStyle: "italic" },
+  itemRow: { borderWidth: 1, borderRadius: 12, padding: 12, marginTop: 12 },
+  itemRowHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  removeItemBtn: { padding: 4 },
+  addItemBtn: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 14, alignSelf: "flex-start" },
+  addItemText: { fontSize: 14, fontWeight: "600" },
   fieldLabel: { fontSize: 11, fontWeight: "700", letterSpacing: 0.5, marginBottom: 6, marginTop: 16 },
   textInput: { padding: 12, borderRadius: 10, borderWidth: 1, fontSize: 16 },
   locationRow: { flexDirection: "row", gap: 8, marginTop: 4 },
